@@ -50,31 +50,46 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="rl-chess", description="RL Chess Agent CLI")
-    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
+    parser = argparse.ArgumentParser(
+        prog="rl-chess",
+        description="RL Chess Agent: AlphaZero Engine & Unified Desktop Dashboard",
+    )
+    # Global options when launching the default app
+    parser.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
+    parser.add_argument("--checkpoint", type=str, default="", help="Checkpoint path or name")
+    parser.add_argument("--color", choices=["white", "black"], default="white", help="Human color in Play tab")
+
+    subparsers = parser.add_subparsers(dest="command", help="Optional sub-commands")
+
+    # app (explicit launch of unified dashboard)
+    app_p = subparsers.add_parser("app", help="Launch the unified Pygame dashboard (default)")
+    app_p.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
+    app_p.add_argument("--checkpoint", type=str, default="", help="Checkpoint path or name")
+    app_p.add_argument("--color", choices=["white", "black"], default="white", help="Human color")
+
+    # play (alias to app)
+    play_p = subparsers.add_parser("play", help="Launch play interface in unified app")
+    play_p.add_argument("--checkpoint", type=str, default="", help="Checkpoint path")
+    play_p.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
+    play_p.add_argument("--color", choices=["white", "black"], default="white", help="Human color")
 
     # stats
     stats_p = subparsers.add_parser("stats", help="Show training and Elo ledger summary")
     stats_p.add_argument("--db", default="data/ledger.db", help="Path to SQLite ledger file")
 
     # train
-    train_p = subparsers.add_parser("train", help="Run self-play training loop")
+    train_p = subparsers.add_parser("train", help="Run self-play training loop (headless)")
     train_p.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
     train_p.add_argument("--generations", type=int, default=1, help="Number of generations to run")
 
     # benchmark
-    bench_p = subparsers.add_parser("benchmark", help="Run Stockfish benchmark and estimate Elo")
+    bench_p = subparsers.add_parser("benchmark", help="Run Stockfish benchmark and estimate Elo (headless)")
     bench_p.add_argument("--checkpoint", type=str, default="", help="Checkpoint path or name (defaults to champion)")
     bench_p.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
     bench_p.add_argument("--games", type=int, default=10, help="Games per opponent rung")
 
-    # play
-    play_p = subparsers.add_parser("play", help="Launch pygame UI to play against the agent")
-    play_p.add_argument("--checkpoint", type=str, default="", help="Checkpoint path (defaults to champion/random)")
-    play_p.add_argument("--config", default="configs/tiny.yaml", help="Path to YAML config")
-    play_p.add_argument("--color", choices=["white", "black"], default="white", help="Human color")
-
     args = parser.parse_args()
+
     if args.command == "stats":
         cmd_stats(args)
     elif args.command == "train":
@@ -83,7 +98,8 @@ def main() -> None:
     elif args.command == "benchmark":
         from rl_chess.eval.benchmark import run_benchmark
         run_benchmark(args.config, args.checkpoint, args.games)
-    elif args.command == "play":
+    elif args.command in ("play", "app") or args.command is None:
+        # Default action: launch the unified Pygame app
         from rl_chess.gui.app import run_app
         run_app(args.config, args.checkpoint, args.color)
     else:

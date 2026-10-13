@@ -52,38 +52,29 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. Play Against the Agent
-Launch the Pygame desktop interface:
+### 2. Launch the Unified Desktop App
+Launch the complete all-in-one Pygame dashboard:
 
 ```bash
-rl-chess play --color white
+rl-chess
 ```
-- **Hotkeys**:
+Everything can be controlled from within the desktop window across 4 integrated tabs:
+1. **Play vs Agent**: Interactive chessboard, live win expectancy bar, candidate move arrows, and PV line.
+2. **Train Self-Play**: Select model profile and generations, start/stop training, and watch live streaming generation logs.
+3. **Benchmark Elo**: Select checkpoint, run Stockfish gauntlet, and get fitted Elo ratings with 95% confidence intervals.
+4. **Stats & Ledger**: Inspect total games, training steps, registered checkpoints, and complete Elo rating history.
+
+- **Play Hotkeys**:
   - `[N]`: Start New Game
   - `[F]`: Flip Board
   - `[U]`: Take back / Undo move
   - `[Esc]`: Quit
 
-### 3. Run Self-Play Training
-Train for generations (self-play → replay buffer → neural network training → arena promotion gate):
-
-```bash
-rl-chess train --config configs/tiny.yaml --generations 2
-```
-
-### 4. Benchmark & Estimate Elo
-Run a gauntlet against Stockfish to get a human-meaningful Elo with confidence bounds:
-
-```bash
-rl-chess benchmark --config configs/tiny.yaml --games 10
-```
-
-### 5. Inspect Ledger Statistics
-View comprehensive training stats, total positions generated, champion checkpoint, and Elo history:
-
-```bash
-rl-chess stats
-```
+### Optional CLI Commands (Headless / Scripts)
+You can still run individual operations directly from the command line:
+- `rl-chess train --config configs/tiny.yaml --generations 2`
+- `rl-chess benchmark --config configs/tiny.yaml --games 10`
+- `rl-chess stats`
 
 ---
 
@@ -98,7 +89,7 @@ Configurations are stored in `configs/`:
 
 ## Test Suite
 
-Run the full automated test suite (24 tests covering encoding round-trips, ResNet gradients, MCTS search, selfplay training, Bradley-Terry Elo solver, and headless Pygame rendering):
+Run the full automated test suite (27 tests covering encoding round-trips, ResNet gradients, MCTS search, selfplay training, Bradley-Terry Elo solver, and headless Pygame rendering):
 
 ```bash
 pytest tests/
