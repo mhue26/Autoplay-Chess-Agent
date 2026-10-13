@@ -1,0 +1,47 @@
+# Medium profile: scaled model for longer runs
+profile: medium
+device: auto
+
+network:
+  num_blocks: 15
+  channels: 192
+
+mcts:
+  num_simulations: 400
+  c_puct: 1.5
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+  temp_init: 1.0
+  temp_final: 0.0
+  temp_decay_plies: 30
+  virtual_loss: 3.0
+
+selfplay:
+  games_per_generation: 50
+  max_plies: 400
+
+training:
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  train_steps_per_generation: 1000
+  replay_buffer_capacity: 200000
+  window_games: 500
+
+arena:
+  num_games: 40
+  win_rate_threshold: 0.55
+  temperature: 0.2
+
+benchmark:
+  stockfish_path: /opt/homebrew/bin/stockfish
+  games_per_opponent: 30
+  time_limit_sec: 0.5
+  agent_simulations: 400
+
+paths:
+  data_dir: data
+  ledger_db: data/ledger.db
+  checkpoints_dir: data/checkpoints
+  replay_dir: data/replay
+  pgns_dir: data/pgns

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+data/checkpoints/*.pt
+data/replay/*.npz
+data/pgns/*.pgn
+data/ledger.db
+data/ledger.db-journal
+data/ledger.db-wal
+data/ledger.db-shm
+*.egg-info/
+dist/
+build/
+.pytest_cache/

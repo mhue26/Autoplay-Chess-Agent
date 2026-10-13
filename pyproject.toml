@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rl-chess"
+version = "0.1.0"
+description = "AlphaZero-style chess RL agent with MCTS, Pygame GUI, and Stockfish Elo benchmark"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "chess>=1.10.0",
+    "numpy>=1.26.0",
+    "pygame>=2.6.0",
+    "pyyaml>=6.0.0",
+    "torch>=2.2.0",
+]
+
+[project.scripts]
+rl-chess = "rl_chess.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
