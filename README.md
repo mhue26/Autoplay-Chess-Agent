@@ -3,7 +3,7 @@
 An AlphaZero-style chess reinforcement learning engine and local desktop application written from scratch in PyTorch, featuring:
 - **Zero human heuristics**: Learns purely via tabula rasa self-play and PUCT Monte Carlo Tree Search (MCTS).
 - **Apple Silicon MPS GPU accelerated**: Optimized for local Mac training with CPU and CUDA fallbacks.
-- **Pygame Desktop GUI**: Real-time interactive board with threaded non-blocking agent search, live win-expectancy evaluation bar, top candidate move arrows, and principal variation (PV).
+- **Pygame Desktop GUI**: Real-time interactive board with threaded non-blocking agent search, live win-expectancy evaluation bar, and top candidate move arrows.
 - **Calibrated Stockfish Benchmark**: Gauntlet against Stockfish across calibrated strength levels with Bradley-Terry Maximum Likelihood Elo fitting and 95% confidence intervals.
 - **SQLite Universal Training Ledger**: Audits all self-play games, training steps, arena promotions, and human matches in `data/ledger.db`.
 
@@ -22,7 +22,7 @@ An AlphaZero-style chess reinforcement learning engine and local desktop applica
         ┌──────────────────────────────┐          ┌──────────────────────────────┐
         │      Training Pipeline       │          │   Stockfish Elo Benchmark    │
         │ • Self-Play (PUCT + Noise)   │          │ • Gauntlet vs Calibrated SF  │
-        │ • Windowed Replay Buffer     │          │ • Bradley-Terry MLE Solver   │
+        │ • Replay Buffer     │          │ • Bradley-Terry MLE Solver   │
         │ • SGD Dual-Head ResNet       │          │ • 95% Confidence Intervals   │
         │ • 55% Arena Promotion Gate   │          │                              │
         └──────────────┬───────────────┘          └──────────────┬───────────────┘
@@ -58,38 +58,40 @@ Launch the complete all-in-one Pygame dashboard:
 ```bash
 rl-chess
 ```
-Everything can be controlled from within the desktop window across 4 integrated tabs:
-1. **Play vs Agent**: Interactive chessboard, live win expectancy bar, candidate move arrows, and PV line.
-2. **Train Self-Play**: Select model profile and generations, start/stop training, and watch live streaming generation logs.
-3. **Benchmark Elo**: Select checkpoint, run Stockfish gauntlet, and get fitted Elo ratings with 95% confidence intervals.
-4. **Stats & Ledger**: Inspect total games, training steps, registered checkpoints, and complete Elo rating history.
 
-- **Play Hotkeys**:
-  - `[N]`: Start New Game
-  - `[F]`: Flip Board
-  - `[U]`: Take back / Undo move
-  - `[Esc]`: Quit
+The window is 1040×620 points and renders at the display's native pixel density (2× on Retina) automatically.
+
+Everything can be controlled from within the desktop window across 4 integrated tabs:
+1. **Play Computer**: Interactive chessboard, live win expectancy bar, and candidate move arrows.
+2. **Training**: Choose how many generations to run, start/stop training, and watch live logs.
+3. **Benchmark Elo**: Select checkpoint, run Stockfish gauntlet, and get fitted Elo ratings with 95% confidence intervals.
+4. **Statistics**: Inspect total games, training steps, registered checkpoints, and complete Elo rating history.
 
 ### Optional CLI Commands (Headless / Scripts)
 You can still run individual operations directly from the command line:
-- `rl-chess train --config configs/tiny.yaml --generations 2`
-- `rl-chess benchmark --config configs/tiny.yaml --games 10`
+- `rl-chess train --generations 2`
+- `rl-chess benchmark --games 10`
 - `rl-chess stats`
 
----
+Settings (network size, MCTS sims, games per generation, etc.) live in `configs/config.yaml`.
 
-## Profiles
-
-Configurations are stored in `configs/`:
-- `configs/tiny.yaml`: 6 residual blocks, 64 channels, 64 MCTS simulations (fast iteration & testing).
-- `configs/small.yaml`: 10 residual blocks, 128 channels, 160 MCTS simulations (recommended default for Mac M-series).
-- `configs/medium.yaml`: 15 residual blocks, 192 channels, 400 MCTS simulations (longer training runs).
+### Layout
+```
+src/rl_chess/
+  encoding.py   board/move planes      model.py      dual-head ResNet
+  mcts.py       PUCT search            game.py       shared game loop
+  ledger.py     SQLite ledger          config.py     YAML loading
+  elo.py        Bradley-Terry fit      benchmark.py  Stockfish gauntlet
+  train/        self-play, arena, replay buffer, trainer, generation loop
+  gui/          Pygame app, renderer, widgets, play session, workers
+  cli.py        `rl-chess` entry point
+```
 
 ---
 
 ## Test Suite
 
-Run the full automated test suite (27 tests covering encoding round-trips, ResNet gradients, MCTS search, selfplay training, Bradley-Terry Elo solver, and headless Pygame rendering):
+Run the full automated test suite (covering encoding round-trips, ResNet gradients, MCTS search, selfplay training, Bradley-Terry Elo solver, and headless Pygame rendering):
 
 ```bash
 pytest tests/

@@ -6,7 +6,7 @@ import random
 import chess
 import numpy as np
 
-from rl_chess.core.encoding import (
+from rl_chess.encoding import (
     ACTION_SPACE_SIZE,
     NUM_INPUT_CHANNELS,
     decode_action,
@@ -29,7 +29,7 @@ def test_starting_position_moves():
         action = encode_move(move, board.turn)
         assert 0 <= action < ACTION_SPACE_SIZE
         assert mask[action] or mask[action] == 1
-        decoded = decode_action(action, board.turn)
+        decoded = decode_action(action, board)
         assert decoded == move, f"Expected {move}, decoded {decoded}"
 
 
@@ -70,7 +70,7 @@ def test_castling_and_en_passant():
     assert len(castle_moves) == 2  # e1g1, e1c1
     for m in castle_moves:
         act = encode_move(m, board.turn)
-        assert decode_action(act, board.turn) == m
+        assert decode_action(act, board) == m
 
     # Board with Black castling
     board_b = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
@@ -78,7 +78,7 @@ def test_castling_and_en_passant():
     assert len(castle_moves_b) == 2
     for m in castle_moves_b:
         act = encode_move(m, board_b.turn)
-        assert decode_action(act, board_b.turn) == m
+        assert decode_action(act, board_b) == m
 
     # En passant: White pawn on e5, Black pawn plays d7-d5 -> e5xd6 ep
     ep_board = chess.Board("8/8/8/3pP3/8/8/8/4K2k w - d6 0 1")
@@ -86,7 +86,7 @@ def test_castling_and_en_passant():
     assert len(ep_moves) == 1
     ep_move = ep_moves[0]
     act = encode_move(ep_move, ep_board.turn)
-    assert decode_action(act, ep_board.turn) == ep_move
+    assert decode_action(act, ep_board) == ep_move
 
 
 def test_round_trip_random_games():

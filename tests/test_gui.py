@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 import queue
-import tempfile
-from pathlib import Path
 import chess
 import pygame
 
@@ -13,6 +11,7 @@ import pygame
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 from rl_chess.gui.app import ChessApp
+from rl_chess.gui.game_end import game_end_notice
 from rl_chess.gui.renderer import ChessRenderer
 from rl_chess.gui.widgets import (
     Button,
@@ -21,8 +20,37 @@ from rl_chess.gui.widgets import (
     ProgressBar,
     TabBar,
 )
-from rl_chess.gui.workers import BenchmarkWorker, TrainingWorker
-from rl_chess.mcts.search import CandidateMoveAnalysis, MCTSAnalysis
+from rl_chess.gui.play import PlaySession, resolve_human_move
+from rl_chess.gui.workers import BackgroundWorker
+from rl_chess.mcts import CandidateMoveAnalysis, MCTSAnalysis
+
+
+def test_game_end_notice_messages():
+    board = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+    notice = game_end_notice(board, human_color=chess.WHITE)
+    assert notice.tone == "loss"
+    assert notice.title == "You lose"
+    assert notice.subtitle == "Checkmate"
+
+    board2 = chess.Board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1")
+    notice2 = game_end_notice(board2, human_color=chess.WHITE)
+    assert notice2.tone == "win"
+    assert notice2.title == "You win!"
+
+    board3 = chess.Board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1")
+    notice3 = game_end_notice(board3, human_color=chess.BLACK)
+    assert notice3.tone == "loss"
+
+
+def test_game_end_overlay_render():
+    pygame.init()
+    renderer = ChessRenderer(board_size=560)
+    surface = pygame.Surface((1040, 620))
+    board = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+    notice = game_end_notice(board, human_color=chess.WHITE)
+    renderer.draw_board(surface, board)
+    renderer.draw_game_end_overlay(surface, board, notice, elapsed_ms=600, flipped=False)
+    assert surface.get_at((renderer.board_offset_x + 40, renderer.board_offset_y + 40))[3] == 255
 
 
 def test_renderer_coordinates():
@@ -74,8 +102,6 @@ def test_render_board_and_panel():
                 q_value=0.25,
             )
         ],
-        principal_variation=[chess.Move.from_uci("e2e4"), chess.Move.from_uci("e7e5")],
-        pv_san="1. e4 e5",
     )
 
     renderer.draw_board(
@@ -132,19 +158,16 @@ def test_widget_primitives():
     tab_bar.render(surface, font)
 
     # 3. CycleButton
-    cycle_val = []
     cycle_btn = CycleButton(
         rect=(10, 60, 120, 30),
         label="Mode",
         options=["Easy", "Medium", "Hard"],
         initial_index=0,
-        on_change=lambda v: cycle_val.append(v),
     )
     assert cycle_btn.value == "Easy"
     ev_cycle = pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": (20, 70)})
     cycle_btn.handle_event(ev_cycle)
     assert cycle_btn.value == "Medium"
-    assert cycle_val == ["Medium"]
     cycle_btn.render(surface, font)
 
     # 4. ProgressBar
@@ -168,17 +191,16 @@ def test_multi_tab_renderers():
     renderer = ChessRenderer(board_size=560)
     surface = pygame.Surface((1040, 620))
 
-    # Test Train tab header
-    renderer.draw_train_tab_header(surface, status="idle", champion_name="gen_0")
+    renderer.draw_job_header(surface, "Training", status="idle", info="Current Champion: gen_0")
 
-    # Test Benchmark tab header with Elo
     latest_elo = {"elo": 1250.0, "ci_low": 1180.0, "ci_high": 1320.0}
-    renderer.draw_benchmark_tab_header(surface, status="running", checkpoint_name="gen_1", latest_elo=latest_elo)
+    renderer.draw_job_header(surface, "Benchmark", status="running", info="Latest Elo: 1250", badge=True)
 
     # Test Stats tab
     summary = {
         "total_games": 25,
         "selfplay_games": 20,
+        "human_games": 3,
         "selfplay_positions_estimated": 840,
         "training_steps": 150,
         "checkpoints_count": 2,
@@ -193,7 +215,7 @@ def test_multi_tab_renderers():
 
 def test_chess_app_headless_cycle():
     pygame.init()
-    app = ChessApp(config_path="configs/tiny.yaml")
+    app = ChessApp(config_path="configs/config.yaml")
     assert app.current_tab == "play"
 
     # Switch tabs
@@ -210,9 +232,171 @@ def test_chess_app_headless_cycle():
     assert app.current_tab == "stats"
 
     # Queue polling test
-    app.worker_queue.put({"type": "log", "text": "Test log output"})
-    app.worker_queue.put({"type": "train_progress", "data": {"phase": "Self-Play", "generation": 1, "current": 1, "total": 10, "fraction": 0.1}})
+    app.worker_queue.put({"kind": "train", "type": "log", "data": "Test log output"})
+    app.worker_queue.put({
+        "kind": "train", "type": "progress",
+        "data": {"phase": "Self-Play", "generation": 1, "current": 1, "total": 10, "fraction": 0.1},
+    })
     app._poll_queues()
+    assert "Test log output" in app.train_panel.log.lines[-1]
+    assert app.train_panel.progress.progress == 0.1
 
-    assert "Test log output" in app.train_log_box.lines[-1]
-    assert app.train_progress_bar.progress == 0.1
+
+def test_high_resolution_mouse_coordinates_are_scaled():
+    pygame.init()
+    app = ChessApp(config_path="configs/config.yaml")
+
+    class FakeWindow:
+        def to_surface(self, pos):
+            return (pos[0] * 2, pos[1] * 2)
+
+        def surface_per_point(self):
+            return 2.0
+
+    app._hidpi = FakeWindow()
+
+    event = pygame.event.Event(
+        pygame.MOUSEMOTION,
+        {"pos": (125, 75), "rel": (3, -2), "buttons": (0, 0, 0)},
+    )
+    scaled = app._event_in_render_pixels(event)
+
+    assert scaled.pos == (250, 150)
+    assert scaled.rel == (6, -4)
+
+
+def test_background_worker_reports_events():
+    q: queue.Queue = queue.Queue()
+
+    def job(n, on_log, stop_event):
+        on_log(f"ran {n}")
+
+    worker = BackgroundWorker("train", job, q)
+    assert worker.start(n=3)
+    worker._thread.join(timeout=5)
+
+    events = [q.get_nowait() for _ in range(q.qsize())]
+    assert [(e["type"], e["data"]) for e in events] == [
+        ("status", "running"), ("log", "ran 3"), ("status", "completed"),
+    ]
+
+
+def test_resolve_human_move_promotion_and_illegal():
+    board = chess.Board("8/P6k/8/8/8/8/8/K7 w - - 0 1")
+    assert resolve_human_move(board, chess.A7, chess.A8) == chess.Move(chess.A7, chess.A8, promotion=chess.QUEEN)
+    assert resolve_human_move(board, chess.A7, chess.A7) is None
+    assert resolve_human_move(board, chess.A1, chess.H8) is None
+
+
+def test_play_session_click_and_drag():
+    session = PlaySession(chess.WHITE, drag_threshold=6)
+
+    # Click-to-move: select e2, then click e4
+    assert session.mouse_down((0, 0), chess.E2) is None
+    assert session.selected_sq == chess.E2 and chess.E4 in session.legal_destinations
+    assert session.mouse_up(chess.E2) is None  # released in place keeps selection
+    assert session.selected_sq == chess.E2
+    move = session.mouse_down((0, 0), chess.E4)
+    assert move == chess.Move.from_uci("e2e4")
+    session.push(move)
+    assert session.selected_sq is None and session.last_move == move
+
+    # Not the human's turn now
+    assert session.mouse_down((0, 0), chess.E7) is None
+    session.push(chess.Move.from_uci("e7e5"))
+
+    # Drag g1 -> f3
+    session.mouse_down((10, 10), chess.G1)
+    session.mouse_motion((40, 40))
+    assert session.is_dragging
+    assert session.mouse_up(chess.F3) == chess.Move.from_uci("g1f3")
+    assert not session.is_dragging
+
+
+def test_train_tab_visualizer_and_toggle():
+    pygame.init()
+    app = ChessApp(config_path="configs/config.yaml")
+
+    # Switch to train tab
+    app.tab_bar.active_tab = "train"
+    app._on_tab_change("train")
+    assert app.current_tab == "train"
+    assert app.train_view_mode == "visualiser"
+
+    # 1. Render in visualiser view (idle)
+    app._draw()
+
+    # 2. Feed telemetry events to queue
+    app.worker_queue.put({
+        "type": "train_viz",
+        "data": {"type": "gen_start", "generation": 1, "champion_name": "gen_0", "sims": 64},
+    })
+    b = chess.Board()
+    b.push_san("e4")
+    app.worker_queue.put({
+        "type": "train_viz",
+        "data": {
+            "type": "move",
+            "generation": 1,
+            "game_idx": 1,
+            "ply": 1,
+            "san": "e4",
+            "uci": "e2e4",
+            "from_sq": chess.E2,
+            "to_sq": chess.E4,
+            "fen": b.fen(),
+            "root_value_white": 0.1,
+            "candidates": [
+                {"san": "e4", "uci": "e2e4", "from_sq": chess.E2, "to_sq": chess.E4, "prior": 0.5, "visits": 30, "visit_share": 0.6, "q_value": 0.15},
+            ],
+        },
+    })
+    app._poll_queues()
+    assert app.train_viz_state.generation == 1
+    assert app.train_viz_state.current_game is not None
+    assert len(app.train_viz_state.current_game.moves) == 1
+
+    # Render during selfplay
+    app._draw()
+
+    # Toggle to Log view
+    app._toggle_train_view()
+    assert app.train_view_mode == "log"
+    assert app.train_view_btn.text == "View: Logs"
+    app._draw()
+
+    # Toggle back to Visualiser view
+    app._toggle_train_view()
+    assert app.train_view_mode == "visualiser"
+    assert app.train_view_btn.text == "View: Board"
+    app._draw()
+
+    # Test pace toggle
+    app._toggle_train_pace()
+    assert app.train_viz_state.pace_mode == "0.2s"
+
+    # Test live follow toggle
+    app._toggle_train_live()
+    assert app.train_viz_state.follow_live is False
+    assert app.train_live_btn.text == "Paused"
+
+
+def test_training_toolbar_controls_fit_without_overlap():
+    pygame.init()
+    app = ChessApp(config_path="configs/config.yaml")
+    controls = [
+        *app.train_panel.selectors,
+        app.train_panel.action,
+        app.train_view_btn,
+        app.train_pace_btn,
+        app.train_live_btn,
+        app.train_prev_btn,
+        app.train_next_btn,
+        app.train_end_btn,
+    ]
+
+    for control in controls:
+        assert control.rect.left >= 20
+        assert control.rect.right <= 1020
+    for index, control in enumerate(controls):
+        assert all(not control.rect.colliderect(other.rect) for other in controls[index + 1:])

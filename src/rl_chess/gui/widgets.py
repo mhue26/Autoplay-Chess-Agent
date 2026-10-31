@@ -1,24 +1,48 @@
-"""Lightweight Pygame widget primitives for tabs, buttons, log streaming, and progress bars."""
+"""Pygame widget primitives and the background-job panel used by the Training/Benchmark tabs."""
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import pygame
 
 # Common UI Theme Palette
 COLOR_BG = (28, 30, 34)
 COLOR_CARD = (40, 43, 48)
+COLOR_PANEL = (32, 34, 37)
+COLOR_PANEL_CARD = (47, 49, 54)
 COLOR_CARD_HOVER = (50, 54, 60)
-COLOR_CARD_ACTIVE = (60, 65, 74)
 COLOR_PRIMARY = (76, 175, 80)        # Green accent
 COLOR_PRIMARY_HOVER = (92, 195, 96)
-COLOR_PRIMARY_DARK = (46, 125, 50)
 COLOR_DANGER = (220, 53, 69)
 COLOR_DANGER_HOVER = (235, 75, 90)
 COLOR_TEXT = (240, 240, 240)
 COLOR_TEXT_MUTED = (160, 165, 175)
 COLOR_BORDER = (65, 70, 80)
 COLOR_PROGRESS_BG = (30, 32, 36)
+
+
+def _fit_text(
+    font: pygame.font.Font,
+    text: str,
+    max_width: int,
+    color: Tuple[int, int, int] = COLOR_TEXT,
+) -> pygame.Surface:
+    """Render one line without allowing it to spill outside its control."""
+    rendered = font.render(text, True, color)
+    if rendered.get_width() <= max_width:
+        return rendered
+
+    suffix = "..."
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = font.render(text[:mid] + suffix, True, color)
+        if candidate.get_width() <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return font.render(text[:lo] + suffix if lo else suffix, True, color)
 
 
 class Button:
@@ -41,7 +65,6 @@ class Button:
         self.border_radius = border_radius
         self.is_hovered: bool = False
         self.is_disabled: bool = False
-        self.is_active: bool = False
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         if self.is_disabled:
@@ -59,9 +82,6 @@ class Button:
         if self.is_disabled:
             bg = (self.color[0] // 2, self.color[1] // 2, self.color[2] // 2)
             txt_c = COLOR_TEXT_MUTED
-        elif self.is_active:
-            bg = COLOR_CARD_ACTIVE
-            txt_c = COLOR_PRIMARY
         elif self.is_hovered:
             bg = self.hover_color
             txt_c = self.text_color
@@ -72,7 +92,7 @@ class Button:
         pygame.draw.rect(surface, bg, self.rect, border_radius=self.border_radius)
         pygame.draw.rect(surface, COLOR_BORDER, self.rect, width=1, border_radius=self.border_radius)
 
-        txt_surf = font.render(self.text, True, txt_c)
+        txt_surf = _fit_text(font, self.text, max(1, self.rect.width - 16), txt_c)
         txt_rect = txt_surf.get_rect(center=self.rect.center)
         surface.blit(txt_surf, txt_rect)
 
@@ -157,13 +177,11 @@ class CycleButton:
         label: str,
         options: List[str],
         initial_index: int = 0,
-        on_change: Optional[Callable[[str], None]] = None,
     ):
         self.rect = pygame.Rect(rect)
         self.label = label
         self.options = options
         self.selected_index = initial_index % len(options) if options else 0
-        self.on_change = on_change
         self.is_hovered: bool = False
         self.is_disabled: bool = False
 
@@ -187,8 +205,6 @@ class CycleButton:
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
                 self.selected_index = (self.selected_index + 1) % len(self.options)
-                if self.on_change:
-                    self.on_change(self.value)
                 return True
         return False
 
@@ -198,7 +214,7 @@ class CycleButton:
         pygame.draw.rect(surface, COLOR_BORDER, self.rect, width=1, border_radius=6)
 
         text = f"{self.label}: {self.value}" if self.label else self.value
-        txt_surf = font.render(text, True, COLOR_TEXT)
+        txt_surf = _fit_text(font, text, max(1, self.rect.width - 16))
         txt_rect = txt_surf.get_rect(center=self.rect.center)
         surface.blit(txt_surf, txt_rect)
 
@@ -215,9 +231,12 @@ class ProgressBar:
         self.progress = max(0.0, min(1.0, progress))
         self.label = label
         self.color = color
+        self.indeterminate = False
 
-    def set_progress(self, progress: float, label: str = "") -> None:
-        self.progress = max(0.0, min(1.0, progress))
+    def set_progress(self, progress: float, label: str = "", *, indeterminate: bool = False) -> None:
+        self.indeterminate = indeterminate
+        if not indeterminate:
+            self.progress = max(0.0, min(1.0, progress))
         if label:
             self.label = label
 
@@ -226,17 +245,32 @@ class ProgressBar:
         pygame.draw.rect(surface, COLOR_PROGRESS_BG, self.rect, border_radius=4)
         pygame.draw.rect(surface, COLOR_BORDER, self.rect, width=1, border_radius=4)
 
-        # Fill
-        fill_w = int((self.rect.width - 2) * self.progress)
-        if fill_w > 0:
-            fill_rect = pygame.Rect(self.rect.x + 1, self.rect.y + 1, fill_w, self.rect.height - 2)
-            pygame.draw.rect(surface, self.color, fill_rect, border_radius=3)
+        inner = pygame.Rect(self.rect.x + 1, self.rect.y + 1, self.rect.width - 2, self.rect.height - 2)
+        if self.indeterminate:
+            span = max(48, inner.width // 5)
+            offset = (pygame.time.get_ticks() // 18) % max(1, inner.width + span)
+            x = inner.x + offset - span
+            fill_rect = pygame.Rect(x, inner.y, span, inner.height)
+            fill_rect.clamp_ip(inner)
+            if fill_rect.width > 0:
+                pygame.draw.rect(surface, self.color, fill_rect, border_radius=3)
+        else:
+            fill_w = int(inner.width * self.progress)
+            if fill_w > 0:
+                fill_rect = pygame.Rect(inner.x, inner.y, fill_w, inner.height)
+                pygame.draw.rect(surface, self.color, fill_rect, border_radius=3)
 
-        # Overlay text
-        text = self.label if self.label else f"{int(self.progress * 100)}%"
-        txt_surf = font.render(text, True, COLOR_TEXT)
-        txt_rect = txt_surf.get_rect(center=self.rect.center)
-        surface.blit(txt_surf, txt_rect)
+        # Overlay text (omit idle "0%" when label is empty)
+        if self.label:
+            text = self.label
+        elif self.progress > 0:
+            text = f"{int(self.progress * 100)}%"
+        else:
+            text = ""
+        if text:
+            txt_surf = _fit_text(font, text, max(1, self.rect.width - 12))
+            txt_rect = txt_surf.get_rect(center=self.rect.center)
+            surface.blit(txt_surf, txt_rect)
 
 
 class LogBox:
@@ -263,12 +297,8 @@ class LogBox:
         if self.auto_scroll:
             self.scroll_offset = 0
 
-    def clear(self) -> None:
-        self.lines.clear()
-        self.scroll_offset = 0
-
     def handle_event(self, event: pygame.event.Event) -> None:
-        if event.type == pygame.MOUSEWHEEL and self.rect.collidepoint(pygame.mouse.get_pos()):
+        if event.type == pygame.MOUSEWHEEL and self.rect.collidepoint(getattr(event, "pos", pygame.mouse.get_pos())):
             # event.y > 0 is scroll up, < 0 is scroll down
             self.scroll_offset += event.y * 3
             if self.scroll_offset > 0:
@@ -309,9 +339,116 @@ class LogBox:
                 color = (240, 120, 120)
             elif "Game" in line:
                 color = COLOR_TEXT_MUTED
+            elif "Loading" in line or "Syncing" in line or "Weights" in line:
+                color = (200, 180, 90)
 
             surf_line = font.render(line, True, color)
             surface.blit(surf_line, (clip_rect.x, y))
             y += self.line_height
 
         surface.set_clip(orig_clip)
+
+
+class JobPanel:
+    """Controls, progress bar, and log for one background job (training or benchmark).
+
+    ``make_job()`` returns ``(start_message, kwargs)`` for ``worker.start``;
+    ``describe_progress(data)`` returns ``(fraction, label)``.
+    """
+
+    def __init__(
+        self,
+        worker: Any,
+        selectors: List[CycleButton],
+        action_rect: Tuple[int, int, int, int],
+        progress_rect: Tuple[int, int, int, int],
+        log_rect: Tuple[int, int, int, int],
+        line_height: int,
+        start_text: str,
+        stop_text: str,
+        idle_label: str,
+        make_job: Callable[[], Tuple[str, Dict[str, Any]]],
+        describe_progress: Callable[[Dict[str, Any]], Tuple[float, str]],
+        on_finished: Optional[Callable[[str], None]] = None,
+        on_started: Optional[Callable[[], None]] = None,
+        on_result: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
+        self.worker = worker
+        self.selectors = selectors
+        self.start_text = start_text
+        self.stop_text = stop_text
+        self.make_job = make_job
+        self.describe_progress = describe_progress
+        self.on_finished = on_finished
+        self.on_started = on_started
+        self.on_result = on_result
+        self.status = "idle"
+
+        self.action = Button(action_rect, start_text, on_click=self.toggle, color=COLOR_PRIMARY, hover_color=COLOR_PRIMARY_HOVER)
+        self.progress = ProgressBar(progress_rect, label=idle_label)
+        self.log = LogBox(log_rect, max_lines=600, line_height=line_height)
+
+    def _style_action(self, running: bool) -> None:
+        self.action.text = self.stop_text if running else self.start_text
+        self.action.color = COLOR_DANGER if running else COLOR_PRIMARY
+        self.action.hover_color = COLOR_DANGER_HOVER if running else COLOR_PRIMARY_HOVER
+
+    def toggle(self) -> None:
+        if self.worker.is_running():
+            self.worker.request_stop()
+            self.action.text = "Stopping..."
+            self.action.is_disabled = True
+            return
+        message, kwargs = self.make_job()
+        self.log.append(message)
+        if self.worker.start(**kwargs):
+            if self.on_started:
+                self.on_started()
+            self.status = "running"
+            job = "Benchmark" if self.worker.kind == "bench" else "Training"
+            self.progress.set_progress(0.0, label=f"{job} in progress...")
+            self._style_action(running=True)
+            for sel in self.selectors:
+                sel.is_disabled = True
+
+    def handle_worker_event(self, ev: Dict[str, Any]) -> None:
+        type_, data = ev["type"], ev["data"]
+        if type_ == "log":
+            self.log.append(data)
+        elif type_ == "progress":
+            self.progress.set_progress(*self.describe_progress(data))
+        elif type_ == "result":
+            if self.on_result:
+                self.on_result(data)
+        elif type_ == "status":
+            self.status = data
+            if data == "running":
+                job = "Benchmark" if self.worker.kind == "bench" else "Training"
+                self.progress.set_progress(0.0, label=f"{job} in progress...")
+            self.action.is_disabled = False
+            for sel in self.selectors:
+                sel.is_disabled = False
+            if data != "running":
+                self._style_action(running=False)
+                job = "Benchmark" if self.worker.kind == "bench" else "Training"
+                if data == "completed":
+                    self.progress.set_progress(1.0, label=f"{job} run finished")
+                elif data == "stopped":
+                    self.progress.set_progress(self.progress.progress, label=f"{job} stopped")
+                elif data == "error":
+                    self.progress.set_progress(self.progress.progress, label=f"{job} failed")
+                if self.on_finished:
+                    self.on_finished(data)
+
+    def handle_event(self, event: pygame.event.Event) -> None:
+        for sel in self.selectors:
+            sel.handle_event(event)
+        self.action.handle_event(event)
+        self.log.handle_event(event)
+
+    def render(self, surface: pygame.Surface, font_md: pygame.font.Font, font_sm: pygame.font.Font) -> None:
+        for sel in self.selectors:
+            sel.render(surface, font_md)
+        self.action.render(surface, font_md)
+        self.progress.render(surface, font_sm)
+        self.log.render(surface, font_sm)

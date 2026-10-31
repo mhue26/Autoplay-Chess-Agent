@@ -5,12 +5,12 @@ from __future__ import annotations
 import chess
 import numpy as np
 
-from rl_chess.mcts.search import MCTS
-from rl_chess.net.model import create_model
+from rl_chess.mcts import MCTS
+from rl_chess.model import create_model
 
 
 def test_mcts_search_starting_position():
-    net = create_model("tiny", device="cpu")
+    net = create_model(6, 64, device="cpu")
     mcts = MCTS(net, c_puct=1.5, device="cpu")
 
     board = chess.Board()
@@ -27,12 +27,11 @@ def test_mcts_search_starting_position():
     assert analysis.total_simulations == 30
     assert len(analysis.candidates) == 20
     assert -1.0 <= analysis.root_value <= 1.0
-    assert len(analysis.principal_variation) >= 1
     assert analysis.candidates[0].visits >= 1
 
 
 def test_mcts_greedy_selection():
-    net = create_model("tiny", device="cpu")
+    net = create_model(6, 64, device="cpu")
     mcts = MCTS(net, c_puct=1.5, device="cpu")
 
     board = chess.Board()
@@ -44,7 +43,7 @@ def test_mcts_greedy_selection():
 
 
 def test_mcts_tree_reuse():
-    net = create_model("tiny", device="cpu")
+    net = create_model(6, 64, device="cpu")
     mcts = MCTS(net, c_puct=1.5, device="cpu")
 
     board = chess.Board()
@@ -66,7 +65,7 @@ def test_mcts_terminal_state():
 
     assert board.is_checkmate()
 
-    net = create_model("tiny", device="cpu")
+    net = create_model(6, 64, device="cpu")
     mcts = MCTS(net, device="cpu")
     move, pi, analysis = mcts.search(board, num_simulations=10)
 

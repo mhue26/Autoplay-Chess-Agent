@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from rl_chess.ledger.database import Ledger
+from rl_chess.ledger import Ledger
 
 
 def test_ledger_flow():
@@ -19,7 +19,7 @@ def test_ledger_flow():
             generation=0,
             path="data/checkpoints/gen0.pt",
             promoted=True,
-            config={"profile": "tiny"},
+            config={"network": {"num_blocks": 10, "channels": 128}},
         )
         assert c1_id == 1
 

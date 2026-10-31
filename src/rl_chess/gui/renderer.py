@@ -1,52 +1,56 @@
-"""Board, pieces, analysis, and multi-tab dashboard rendering for Pygame."""
+"""Board, pieces, analysis panel, and dashboard-tab rendering for Pygame."""
 
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Tuple
+import sys
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
 import chess
 import pygame
 
 from rl_chess.gui.widgets import (
-    COLOR_BG,
     COLOR_BORDER,
-    COLOR_CARD,
+    COLOR_PANEL,
+    COLOR_PANEL_CARD,
     COLOR_PRIMARY,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
 )
-from rl_chess.mcts.search import MCTSAnalysis
+from rl_chess.mcts import CandidateMoveAnalysis, MCTSAnalysis
 
-# Board Colors
+Color = Tuple[int, ...]
+
 COLOR_LIGHT_SQ = (240, 217, 181)
 COLOR_DARK_SQ = (181, 136, 99)
 COLOR_SELECTED = (205, 210, 106, 180)
 COLOR_LAST_MOVE = (205, 210, 106, 120)
-COLOR_LEGAL_DOT = (100, 110, 64, 180)
-COLOR_BG_PANEL = (32, 34, 37)
-COLOR_PANEL_CARD = (47, 49, 54)
-COLOR_TEXT_PRIMARY = (240, 240, 240)
-COLOR_TEXT_ACCENT = (76, 175, 80)
+COLOR_LEGAL_MARK = (100, 110, 64)
 COLOR_BAR_WHITE = (235, 235, 235)
 COLOR_BAR_BLACK = (50, 50, 50)
-COLOR_ARROW_TOP1 = (52, 168, 83, 190)
-COLOR_ARROW_TOP2 = (66, 133, 244, 160)
+ARROW_COLORS = [(52, 168, 83), (66, 133, 244)]  # top-1, top-2 candidates
+COLOR_PIECE_WHITE = (252, 252, 252)
+COLOR_PIECE_WHITE_STROKE = (40, 40, 40)
+COLOR_PIECE_BLACK = (24, 24, 24)
 
-# Unicode Chess Characters
-PIECE_UNICODE = {
-    chess.Piece(chess.KING, chess.WHITE): "\u2654",
-    chess.Piece(chess.QUEEN, chess.WHITE): "\u2655",
-    chess.Piece(chess.ROOK, chess.WHITE): "\u2656",
-    chess.Piece(chess.BISHOP, chess.WHITE): "\u2657",
-    chess.Piece(chess.KNIGHT, chess.WHITE): "\u2658",
-    chess.Piece(chess.PAWN, chess.WHITE): "\u2659",
-    chess.Piece(chess.KING, chess.BLACK): "\u265a",
-    chess.Piece(chess.QUEEN, chess.BLACK): "\u265b",
-    chess.Piece(chess.ROOK, chess.BLACK): "\u265c",
-    chess.Piece(chess.BISHOP, chess.BLACK): "\u265d",
-    chess.Piece(chess.KNIGHT, chess.BLACK): "\u265e",
-    chess.Piece(chess.PAWN, chess.BLACK): "\u265f",
+# Filled glyphs (U+265A-265F); the outline set looks hollow in most fonts.
+PIECE_GLYPHS = {
+    chess.KING: "\u265a",
+    chess.QUEEN: "\u265b",
+    chess.ROOK: "\u265c",
+    chess.BISHOP: "\u265d",
+    chess.KNIGHT: "\u265e",
+    chess.PAWN: "\u265f",
 }
+
+
+def _ui_sans_font() -> str:
+    available = pygame.font.get_fonts()
+    if sys.platform == "darwin":
+        for name in ("helveticaneue", "sfprotext", "sfprodisplay", "helvetica"):
+            if name in available:
+                return name
+    return "helvetica" if "helvetica" in available else "arial"
 
 
 class ChessRenderer:
@@ -57,31 +61,49 @@ class ChessRenderer:
         board_offset_y: int = 50,
         panel_x: int = 600,
         panel_width: int = 420,
+        ui_scale: float = 1.0,
     ):
-        self.board_size = board_size
-        self.board_offset_x = board_offset_x
-        self.board_offset_y = board_offset_y
-        self.panel_x = panel_x
-        self.panel_width = panel_width
-        self.sq_size = board_size // 8
+        self.ui_scale = max(1.0, ui_scale)
+        s = self.s
+        self.board_size = s(board_size)
+        self.board_offset_x = s(board_offset_x)
+        self.board_offset_y = s(board_offset_y)
+        self.panel_x = s(panel_x)
+        self.panel_width = s(panel_width)
+        self.sq_size = self.board_size // 8
 
-        # Initialize fonts
         pygame.font.init()
-        font_name = "arialunicode" if "arialunicode" in pygame.font.get_fonts() else "Arial"
-        self.piece_font = pygame.font.SysFont(font_name, int(self.sq_size * 0.75))
-        self.font_title = pygame.font.SysFont("Helvetica", 22, bold=True)
-        self.font_lg = pygame.font.SysFont("Helvetica", 17, bold=True)
-        self.font_md = pygame.font.SysFont("Helvetica", 14)
-        self.font_sm = pygame.font.SysFont("Helvetica", 12)
-        self.font_mono = pygame.font.SysFont("Courier", 13)
+        sans = _ui_sans_font()
+        glyph_font = "arialunicode" if "arialunicode" in pygame.font.get_fonts() else "Arial"
+        self.piece_font = pygame.font.SysFont(glyph_font, int(self.sq_size * 0.75))
+        self.font_title = pygame.font.SysFont(sans, s(22), bold=True)
+        self.font_lg = pygame.font.SysFont(sans, s(17), bold=True)
+        self.font_md = pygame.font.SysFont(sans, s(14))
+        self.font_sm = pygame.font.SysFont(sans, s(13))
+        self.font_mono = pygame.font.SysFont("menlo" if "menlo" in pygame.font.get_fonts() else "courier", s(13))
+
+    def s(self, value: float) -> int:
+        """Scale a design-pixel value to window pixels."""
+        return int(round(value * self.ui_scale))
+
+    def rect(self, x: float, y: float, w: float, h: float) -> Tuple[int, int, int, int]:
+        return (self.s(x), self.s(y), self.s(w), self.s(h))
+
+    # -- helpers ---------------------------------------------------------
+
+    def _text(self, surface: pygame.Surface, font: pygame.font.Font, text: str, color: Color, x: int, y: int) -> None:
+        surface.blit(font.render(text, True, color), (x, y))
+
+    def _card(self, surface: pygame.Surface, rect: pygame.Rect, fill: Color = COLOR_PANEL_CARD, radius: float = 8) -> None:
+        pygame.draw.rect(surface, fill, rect, border_radius=self.s(radius))
+        pygame.draw.rect(surface, COLOR_BORDER, rect, width=1, border_radius=self.s(radius))
+
+    # -- board geometry --------------------------------------------------
 
     def square_to_rect(self, sq: chess.Square, flipped: bool = False) -> pygame.Rect:
-        file = chess.square_file(sq)
-        rank = chess.square_rank(sq)
-
-        col = file if not flipped else 7 - file
-        row = 7 - rank if not flipped else rank
-
+        file, rank = chess.square_file(sq), chess.square_rank(sq)
+        col = 7 - file if flipped else file
+        row = rank if flipped else 7 - rank
         return pygame.Rect(
             self.board_offset_x + col * self.sq_size,
             self.board_offset_y + row * self.sq_size,
@@ -90,18 +112,33 @@ class ChessRenderer:
         )
 
     def pos_to_square(self, pos: Tuple[int, int], flipped: bool = False) -> Optional[chess.Square]:
-        x, y = pos
-        rel_x = x - self.board_offset_x
-        rel_y = y - self.board_offset_y
-        if rel_x < 0 or rel_y < 0 or rel_x >= self.board_size or rel_y >= self.board_size:
+        rel_x = pos[0] - self.board_offset_x
+        rel_y = pos[1] - self.board_offset_y
+        if not (0 <= rel_x < self.board_size and 0 <= rel_y < self.board_size):
             return None
+        col, row = rel_x // self.sq_size, rel_y // self.sq_size
+        return chess.square(7 - col if flipped else col, row if flipped else 7 - row)
 
-        col = rel_x // self.sq_size
-        row = rel_y // self.sq_size
+    # -- board -----------------------------------------------------------
 
-        file = col if not flipped else 7 - col
-        rank = 7 - row if not flipped else row
-        return chess.square(file, rank)
+    def _blit_piece(self, surface: pygame.Surface, center: Tuple[int, int], piece: chess.Piece) -> None:
+        char = PIECE_GLYPHS[piece.piece_type]
+        cx, cy = center
+        if piece.color == chess.WHITE:
+            stroke = self.piece_font.render(char, True, COLOR_PIECE_WHITE_STROKE)
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                surface.blit(stroke, stroke.get_rect(center=(cx + dx, cy + dy)))
+            fill = self.piece_font.render(char, True, COLOR_PIECE_WHITE)
+        else:
+            shadow = self.piece_font.render(char, True, (10, 10, 10))
+            surface.blit(shadow, shadow.get_rect(center=(cx + 1, cy + 1)))
+            fill = self.piece_font.render(char, True, COLOR_PIECE_BLACK)
+        surface.blit(fill, fill.get_rect(center=center))
+
+    def _highlight(self, surface: pygame.Surface, color: Color, sq: chess.Square, flipped: bool) -> None:
+        overlay = pygame.Surface((self.sq_size, self.sq_size), pygame.SRCALPHA)
+        overlay.fill(color)
+        surface.blit(overlay, self.square_to_rect(sq, flipped))
 
     def draw_board(
         self,
@@ -112,97 +149,106 @@ class ChessRenderer:
         last_move: Optional[chess.Move] = None,
         legal_destinations: Optional[List[chess.Square]] = None,
         analysis: Optional[MCTSAnalysis] = None,
+        drag_from_sq: Optional[chess.Square] = None,
+        drag_piece: Optional[chess.Piece] = None,
+        drag_pos: Optional[Tuple[int, int]] = None,
     ) -> None:
-        """Draw board squares, coordinates, highlights, and pieces."""
-        # 1. Squares
         for r in range(8):
             for c in range(8):
                 color = COLOR_LIGHT_SQ if (r + c) % 2 == 0 else COLOR_DARK_SQ
-                rect = pygame.Rect(
-                    self.board_offset_x + c * self.sq_size,
-                    self.board_offset_y + r * self.sq_size,
-                    self.sq_size,
-                    self.sq_size,
-                )
+                rect = (self.board_offset_x + c * self.sq_size, self.board_offset_y + r * self.sq_size, self.sq_size, self.sq_size)
                 pygame.draw.rect(surface, color, rect)
 
-        # 2. Last move highlight
         if last_move is not None:
-            surf_hl = pygame.Surface((self.sq_size, self.sq_size), pygame.SRCALPHA)
-            surf_hl.fill(COLOR_LAST_MOVE)
-            surface.blit(surf_hl, self.square_to_rect(last_move.from_square, flipped))
-            surface.blit(surf_hl, self.square_to_rect(last_move.to_square, flipped))
-
-        # 3. Selected square highlight
+            self._highlight(surface, COLOR_LAST_MOVE, last_move.from_square, flipped)
+            self._highlight(surface, COLOR_LAST_MOVE, last_move.to_square, flipped)
         if selected_sq is not None:
-            surf_sel = pygame.Surface((self.sq_size, self.sq_size), pygame.SRCALPHA)
-            surf_sel.fill(COLOR_SELECTED)
-            surface.blit(surf_sel, self.square_to_rect(selected_sq, flipped))
+            self._highlight(surface, COLOR_SELECTED, selected_sq, flipped)
 
-        # 4. Legal destination markers
-        if legal_destinations:
-            for dest in legal_destinations:
-                rect = self.square_to_rect(dest, flipped)
-                dot_center = rect.center
-                piece_at_dest = board.piece_at(dest)
-                if piece_at_dest:
-                    pygame.draw.circle(surface, (100, 110, 64), dot_center, int(self.sq_size * 0.42), 4)
-                else:
-                    pygame.draw.circle(surface, (100, 110, 64), dot_center, int(self.sq_size * 0.16))
+        for dest in legal_destinations or []:
+            center = self.square_to_rect(dest, flipped).center
+            if board.piece_at(dest):
+                pygame.draw.circle(surface, COLOR_LEGAL_MARK, center, int(self.sq_size * 0.42), 4)
+            else:
+                pygame.draw.circle(surface, COLOR_LEGAL_MARK, center, int(self.sq_size * 0.16))
 
-        # 5. Top candidate move arrows from analysis
         if analysis and analysis.candidates:
             self._draw_candidate_arrows(surface, analysis.candidates[:2], flipped)
 
-        # 6. Pieces
         for sq, piece in board.piece_map().items():
-            rect = self.square_to_rect(sq, flipped)
-            char = PIECE_UNICODE.get(piece, "")
-            shadow_surf = self.piece_font.render(char, True, (30, 30, 30))
-            shadow_rect = shadow_surf.get_rect(center=(rect.centerx + 1, rect.centery + 1))
-            surface.blit(shadow_surf, shadow_rect)
-            p_color = (250, 250, 250) if piece.color == chess.WHITE else (20, 20, 20)
-            text_surf = self.piece_font.render(char, True, p_color)
-            text_rect = text_surf.get_rect(center=rect.center)
-            surface.blit(text_surf, text_rect)
+            if drag_piece is not None and sq == drag_from_sq:
+                continue
+            self._blit_piece(surface, self.square_to_rect(sq, flipped).center, piece)
+        if drag_piece is not None and drag_pos is not None:
+            self._blit_piece(surface, drag_pos, drag_piece)
 
-        # 7. Coordinates
         for i in range(8):
-            rank_label = str(8 - i if not flipped else i + 1)
-            file_label = chr(ord('a') + (i if not flipped else 7 - i))
-            c_color = COLOR_DARK_SQ if i % 2 == 0 else COLOR_LIGHT_SQ
-
-            r_txt = self.font_sm.render(rank_label, True, c_color)
-            surface.blit(r_txt, (self.board_offset_x + 4, self.board_offset_y + i * self.sq_size + 4))
-
-            f_txt = self.font_sm.render(file_label, True, c_color)
-            surface.blit(
-                f_txt,
-                (self.board_offset_x + (i + 1) * self.sq_size - 12, self.board_offset_y + self.board_size - 16),
-            )
+            label_color = COLOR_DARK_SQ if i % 2 == 0 else COLOR_LIGHT_SQ
+            rank_label = str(i + 1 if flipped else 8 - i)
+            file_label = chr(ord("a") + (7 - i if flipped else i))
+            self._text(surface, self.font_sm, rank_label, label_color,
+                       self.board_offset_x + self.s(4), self.board_offset_y + i * self.sq_size + self.s(4))
+            self._text(surface, self.font_sm, file_label, label_color,
+                       self.board_offset_x + (i + 1) * self.sq_size - self.s(12),
+                       self.board_offset_y + self.board_size - self.s(16))
 
     def _draw_candidate_arrows(
+        self, surface: pygame.Surface, candidates: Sequence[CandidateMoveAnalysis], flipped: bool
+    ) -> None:
+        for cand, color in zip(candidates, ARROW_COLORS):
+            start = self.square_to_rect(cand.move.from_square, flipped).center
+            end = self.square_to_rect(cand.move.to_square, flipped).center
+            pygame.draw.line(surface, color, start, end, width=4)
+            angle = math.atan2(end[1] - start[1], end[0] - start[0])
+            head = [
+                (end[0] - 12 * math.cos(angle + d), end[1] - 12 * math.sin(angle + d))
+                for d in (-math.pi / 6, math.pi / 6)
+            ]
+            pygame.draw.polygon(surface, color, [end, *head])
+
+    def draw_game_end_overlay(
         self,
         surface: pygame.Surface,
-        candidates: List,
-        flipped: bool,
+        board: chess.Board,
+        notice: Any,
+        elapsed_ms: int = 0,
+        flipped: bool = False,
     ) -> None:
-        colors = [COLOR_ARROW_TOP1, COLOR_ARROW_TOP2]
-        for idx, cand in enumerate(candidates):
-            color = colors[idx % len(colors)]
-            start_rect = self.square_to_rect(cand.move.from_square, flipped)
-            end_rect = self.square_to_rect(cand.move.to_square, flipped)
+        """Render banner overlay over the board when the game is completed."""
+        s = self.s
+        card = pygame.Rect(self.board_offset_x + s(40), self.board_offset_y + s(200), self.board_size - s(80), s(120))
+        overlay = pygame.Surface((card.width, card.height), pygame.SRCALPHA)
+        overlay.fill((20, 22, 25, 235))
+        surface.blit(overlay, (card.x, card.y))
+        pygame.draw.rect(surface, COLOR_BORDER, card, width=1, border_radius=s(8))
+        tone = getattr(notice, "tone", "draw")
+        tone_color = COLOR_PRIMARY if tone == "win" else ((220, 53, 69) if tone == "loss" else COLOR_TEXT)
+        self._text(surface, self.font_lg, getattr(notice, "title", "Game Over"), tone_color, card.x + s(20), card.y + s(25))
+        self._text(surface, self.font_md, getattr(notice, "subtitle", ""), COLOR_TEXT_MUTED, card.x + s(20), card.y + s(65))
 
-            start = (start_rect.centerx, start_rect.centery)
-            end = (end_rect.centerx, end_rect.centery)
+    # -- play tab side panel --------------------------------------------
 
-            pygame.draw.line(surface, color[:3], start, end, width=4)
-            angle = math.atan2(end[1] - start[1], end[0] - start[0])
-            arrow_len = 12
-            arrow_w = math.pi / 6
-            p1 = (end[0] - arrow_len * math.cos(angle - arrow_w), end[1] - arrow_len * math.sin(angle - arrow_w))
-            p2 = (end[0] - arrow_len * math.cos(angle + arrow_w), end[1] - arrow_len * math.sin(angle + arrow_w))
-            pygame.draw.polygon(surface, color[:3], [end, p1, p2])
+    def draw_activity_strip(self, surface: pygame.Surface, message: str, busy: bool = False) -> None:
+        """Global status line under the tab bar (training, loading weights, MCTS, etc.)."""
+        s = self.s
+        rect = pygame.Rect(0, s(44), s(1040), s(24))
+        pygame.draw.rect(surface, (24, 26, 30), rect)
+        pygame.draw.line(surface, COLOR_BORDER, (rect.x, rect.bottom - 1), (rect.right, rect.bottom - 1), 1)
+
+        dot_x = rect.x + s(14)
+        dot_y = rect.centery
+        if busy:
+            pulse = 0.45 + 0.55 * math.sin(pygame.time.get_ticks() / 220.0)
+            radius = int(s(4) + s(2) * pulse)
+            pygame.draw.circle(surface, COLOR_PRIMARY, (dot_x, dot_y), radius)
+        else:
+            pygame.draw.circle(surface, COLOR_PRIMARY, (dot_x, dot_y), s(4))
+
+        label = message
+        if busy:
+            phase = (pygame.time.get_ticks() // 400) % 4
+            label = f"{message}{'.' * phase}"
+        self._text(surface, self.font_sm, label, COLOR_TEXT, rect.x + s(28), rect.y + s(5))
 
     def draw_analysis_panel(
         self,
@@ -211,140 +257,113 @@ class ChessRenderer:
         analysis: Optional[MCTSAnalysis],
         agent_name: str,
         is_thinking: bool,
+        weights_status: str = "",
+        weights_loading: bool = False,
     ) -> None:
-        """Render side panel with evaluation bar, candidate moves, and PV."""
-        panel_rect = pygame.Rect(self.panel_x, self.board_offset_y, self.panel_width, self.board_size)
-        pygame.draw.rect(surface, COLOR_BG_PANEL, panel_rect, border_radius=8)
-        pygame.draw.rect(surface, COLOR_BORDER, panel_rect, width=1, border_radius=8)
+        s = self.s
+        panel = pygame.Rect(self.panel_x, self.board_offset_y, self.panel_width, self.board_size)
+        self._card(surface, panel, COLOR_PANEL)
 
-        y = self.board_offset_y + 16
-        title = self.font_lg.render("Live Analysis", True, COLOR_TEXT_PRIMARY)
-        surface.blit(title, (self.panel_x + 16, y))
-        y += 26
+        x = self.panel_x + s(16)
+        y = self.board_offset_y + s(16)
+        self._text(surface, self.font_lg, "Live Analysis", COLOR_TEXT, x, y)
+        y += s(26)
 
-        status_text = "Agent thinking..." if is_thinking else ("White to move" if board.turn == chess.WHITE else "Black to move")
-        color_status = COLOR_TEXT_ACCENT if is_thinking else COLOR_TEXT_MUTED
-        stat = self.font_md.render(f"Turn: {status_text}", True, color_status)
-        surface.blit(stat, (self.panel_x + 16, y))
-        y += 22
+        turn = "Agent thinking..." if is_thinking else ("White to move" if board.turn == chess.WHITE else "Black to move")
+        self._text(surface, self.font_md, f"Turn: {turn}", COLOR_PRIMARY if is_thinking else COLOR_TEXT_MUTED, x, y)
+        y += s(22)
+        self._text(surface, self.font_sm, f"Agent: {agent_name}", COLOR_TEXT_MUTED, x, y)
+        y += s(22)
 
-        agent_label = self.font_sm.render(f"Agent: {agent_name}", True, COLOR_TEXT_MUTED)
-        surface.blit(agent_label, (self.panel_x + 16, y))
-        y += 24
+        if weights_loading:
+            w_color = COLOR_PRIMARY
+            w_label = weights_status or "Loading weights..."
+        elif weights_status:
+            w_color = COLOR_PRIMARY if "updated" in weights_status.lower() else COLOR_TEXT_MUTED
+            w_label = weights_status
+        else:
+            w_color = COLOR_TEXT_MUTED
+            w_label = "Weights: in memory"
+        self._text(surface, self.font_sm, f"Weights: {w_label}", w_color, x, y)
+        y += s(24)
 
-        # Evaluation Bar
+        # Win-expectancy bar (white's perspective)
         root_val = analysis.root_value if analysis else 0.0
-        white_val = root_val if board.turn == chess.WHITE else -root_val
-        white_pct = (white_val + 1.0) / 2.0
+        white_pct = ((root_val if board.turn == chess.WHITE else -root_val) + 1.0) / 2.0
+        self._text(surface, self.font_md, f"Win Expectancy: {white_pct * 100:.1f}% White", COLOR_TEXT, x, y)
+        y += s(20)
+        bar_w, bar_h = self.panel_width - 2 * s(16), s(16)
+        pygame.draw.rect(surface, COLOR_BAR_BLACK, (x, y, bar_w, bar_h), border_radius=s(4))
+        if int(bar_w * white_pct) > 0:
+            pygame.draw.rect(surface, COLOR_BAR_WHITE, (x, y, int(bar_w * white_pct), bar_h), border_radius=s(4))
+        y += s(26)
 
-        bar_label = self.font_md.render(f"Win Expectancy: {white_pct * 100:.1f}% White", True, COLOR_TEXT_PRIMARY)
-        surface.blit(bar_label, (self.panel_x + 16, y))
-        y += 20
+        # Candidate table
+        card = pygame.Rect(x, y, bar_w, s(175))
+        pygame.draw.rect(surface, COLOR_PANEL_CARD, card, border_radius=s(8))
+        tx = self.panel_x + s(24)
+        self._text(surface, self.font_md, "Top Candidate Moves (MCTS)", COLOR_TEXT, tx, y + s(10))
+        self._text(surface, self.font_sm, "Move        Visits     Share        Q", COLOR_TEXT_MUTED, tx, y + s(32))
 
-        bar_w = self.panel_width - 32
-        bar_h = 16
-        pygame.draw.rect(surface, COLOR_BAR_BLACK, (self.panel_x + 16, y, bar_w, bar_h), border_radius=4)
-        white_w = int(bar_w * white_pct)
-        if white_w > 0:
-            pygame.draw.rect(surface, COLOR_BAR_WHITE, (self.panel_x + 16, y, white_w, bar_h), border_radius=4)
-        y += 26
-
-        # Candidate Moves Section
-        card_rect = pygame.Rect(self.panel_x + 16, y, self.panel_width - 32, 175)
-        pygame.draw.rect(surface, COLOR_PANEL_CARD, card_rect, border_radius=8)
-
-        card_title = self.font_md.render("Top Candidate Moves (MCTS)", True, COLOR_TEXT_PRIMARY)
-        surface.blit(card_title, (self.panel_x + 24, y + 10))
-
-        headers = self.font_sm.render("Move        Visits     Share        Q", True, COLOR_TEXT_MUTED)
-        surface.blit(headers, (self.panel_x + 24, y + 32))
-
-        cand_y = y + 52
+        row_y = y + s(52)
         if analysis and analysis.candidates:
             for idx, c in enumerate(analysis.candidates[:4]):
-                row_txt = f"#{idx + 1}  {c.san:<8} {c.visits:<8} {c.visit_share * 100:>5.1f}%   {c.q_value:>+5.2f}"
-                col = COLOR_TEXT_ACCENT if idx == 0 else COLOR_TEXT_PRIMARY
-                surf_row = self.font_sm.render(row_txt, True, col)
-                surface.blit(surf_row, (self.panel_x + 24, cand_y))
-                cand_y += 24
+                row = f"#{idx + 1}  {c.san:<8} {c.visits:<8} {c.visit_share * 100:>5.1f}%   {c.q_value:>+5.2f}"
+                self._text(surface, self.font_sm, row, COLOR_PRIMARY if idx == 0 else COLOR_TEXT, tx, row_y)
+                row_y += s(24)
         else:
-            empty_txt = self.font_sm.render("Awaiting search...", True, COLOR_TEXT_MUTED)
-            surface.blit(empty_txt, (self.panel_x + 24, cand_y))
+            self._text(surface, self.font_sm, "Awaiting search...", COLOR_TEXT_MUTED, tx, row_y)
 
-        y += 186
+    # -- dashboard tabs --------------------------------------------------
 
-        # Principal Variation
-        pv_card = pygame.Rect(self.panel_x + 16, y, self.panel_width - 32, 60)
-        pygame.draw.rect(surface, COLOR_PANEL_CARD, pv_card, border_radius=8)
-        pv_title = self.font_sm.render("Principal Variation:", True, COLOR_TEXT_MUTED)
-        surface.blit(pv_title, (self.panel_x + 24, y + 8))
-
-        pv_text = analysis.pv_san if (analysis and analysis.pv_san) else "-"
-        if len(pv_text) > 42:
-            pv_text = pv_text[:39] + "..."
-        pv_surf = self.font_md.render(pv_text, True, COLOR_TEXT_PRIMARY)
-        surface.blit(pv_surf, (self.panel_x + 24, y + 28))
-
-        y += 76
-        keys_info = [
-            "Hotkeys:",
-            "  [N] New Game    [F] Flip Board",
-            "  [U] Undo Move   [Esc] Quit",
-        ]
-        for line in keys_info:
-            txt = self.font_sm.render(line, True, COLOR_TEXT_MUTED)
-            surface.blit(txt, (self.panel_x + 16, y))
-            y += 18
-
-    # -------------------------------------------------------------
-    # Multi-tab Dashboard Views
-    # -------------------------------------------------------------
-
-    def draw_train_tab_header(
+    def draw_job_header(
         self,
         surface: pygame.Surface,
+        title: str,
         status: str,
-        champion_name: str,
+        info: str = "",
+        badge: bool = False,
+        secondary: str = "",
     ) -> None:
-        """Render controls and headers for the training tab."""
-        x = 20
-        y = 54
-        title = self.font_title.render("Self-Play Reinforcement Learning", True, COLOR_TEXT)
-        surface.blit(title, (x, y))
+        """Title row of the Training / Benchmark tabs: title, status, and a champion label or Elo badge."""
+        s = self.s
+        x, y = s(20), s(54)
+        self._text(surface, self.font_title, title, COLOR_TEXT, x, y)
+        status_color = COLOR_PRIMARY if status in ("running", "loading") else COLOR_TEXT_MUTED
+        self._text(surface, self.font_md, f"Status: {status.upper()}", status_color, x + s(460), y + s(6))
+        if secondary:
+            self._text(surface, self.font_sm, secondary, COLOR_PRIMARY, x + s(460), y + s(26))
+        if not info:
+            return
+        if badge:
+            rect = pygame.Rect(x + s(650), y - s(2), s(330), s(36))
+            self._card(surface, rect, COLOR_PANEL_CARD, radius=6)
+            pygame.draw.rect(surface, COLOR_PRIMARY, rect, width=1, border_radius=s(6))
+            self._text(surface, self.font_md, info, COLOR_PRIMARY, rect.x + s(12), rect.y + s(9))
+        else:
+            self._text(surface, self.font_md, info, COLOR_TEXT, x + s(650), y + s(6))
 
-        status_c = COLOR_TEXT_ACCENT if status == "running" else COLOR_TEXT_MUTED
-        stat_surf = self.font_md.render(f"Status: {status.upper()}", True, status_c)
-        surface.blit(stat_surf, (x + 450, y + 6))
-
-        champ_surf = self.font_md.render(f"Current Champion: {champion_name}", True, COLOR_TEXT)
-        surface.blit(champ_surf, (x + 650, y + 6))
-
-    def draw_benchmark_tab_header(
+    def _draw_table(
         self,
         surface: pygame.Surface,
-        status: str,
-        checkpoint_name: str,
-        latest_elo: Optional[Dict[str, Any]] = None,
+        rect: pygame.Rect,
+        title: str,
+        header: str,
+        rows: List[Tuple[str, Color]],
+        empty_message: str,
     ) -> None:
-        """Render controls and headers for the benchmark tab."""
-        x = 20
-        y = 54
-        title = self.font_title.render("Stockfish Gauntlet & Calibrated Elo", True, COLOR_TEXT)
-        surface.blit(title, (x, y))
-
-        status_c = COLOR_TEXT_ACCENT if status == "running" else COLOR_TEXT_MUTED
-        stat_surf = self.font_md.render(f"Status: {status.upper()}", True, status_c)
-        surface.blit(stat_surf, (x + 480, y + 6))
-
-        # Elo badge if available
-        if latest_elo:
-            badge_rect = pygame.Rect(x + 650, y - 2, 330, 36)
-            pygame.draw.rect(surface, COLOR_PANEL_CARD, badge_rect, border_radius=6)
-            pygame.draw.rect(surface, COLOR_PRIMARY, badge_rect, width=1, border_radius=6)
-
-            txt = f"Latest Elo: {latest_elo.get('elo', 0):.0f} (CI: [{latest_elo.get('ci_low', 0):.0f}, {latest_elo.get('ci_high', 0):.0f}])"
-            b_surf = self.font_md.render(txt, True, COLOR_PRIMARY)
-            surface.blit(b_surf, (badge_rect.x + 12, badge_rect.y + 9))
+        s = self.s
+        self._card(surface, rect)
+        x = rect.x + s(16)
+        self._text(surface, self.font_lg, title, COLOR_TEXT, x, rect.y + s(12))
+        self._text(surface, self.font_mono, header, COLOR_TEXT_MUTED, x, rect.y + s(42))
+        pygame.draw.line(surface, COLOR_BORDER, (x, rect.y + s(62)), (rect.right - s(16), rect.y + s(62)))
+        row_y = rect.y + s(70)
+        if not rows:
+            self._text(surface, self.font_md, empty_message, COLOR_TEXT_MUTED, x, row_y)
+        for text, color in rows:
+            self._text(surface, self.font_mono, text, color, x, row_y)
+            row_y += s(26)
 
     def draw_stats_tab(
         self,
@@ -353,90 +372,48 @@ class ChessRenderer:
         elo_history: List[Dict[str, Any]],
         checkpoints: List[Any],
     ) -> None:
-        """Render universal training metrics cards and historical tables."""
-        x = 20
-        y = 54
+        s = self.s
+        x, y = s(20), s(54)
+        self._text(surface, self.font_title, "Training & Evaluation Ledger", COLOR_TEXT, x, y)
+        y += s(40)
 
-        title = self.font_title.render("Training & Evaluation Ledger", True, COLOR_TEXT)
-        surface.blit(title, (x, y))
-        y += 40
-
-        # 4 Summary Cards
-        card_w = 235
-        card_h = 75
+        champion = summary.get("champion")
+        latest_elo = summary.get("latest_elo")
         metrics = [
-            ("Total Games", str(summary.get("total_games", 0)), f"Self-Play: {summary.get('selfplay_games', 0)}"),
-            ("Training Steps", str(summary.get("training_steps", 0)), f"~{summary.get('selfplay_positions_estimated', 0)} positions"),
-            ("Checkpoints", str(summary.get("checkpoints_count", 0)), f"Champ: {summary.get('champion', {}).get('name', 'None') if summary.get('champion') else 'None'}"),
-            ("Latest Elo", f"{summary.get('latest_elo', {}).get('elo', 0):.0f}" if summary.get("latest_elo") else "N/A", "Stockfish Anchor"),
+            ("Self-Play Games", str(summary.get("selfplay_games", 0)), f"~{summary.get('selfplay_positions_estimated', 0)} positions"),
+            ("Human Play", str(summary.get("human_games", 0)), "Play Computer matches"),
+            ("Training Steps", str(summary.get("training_steps", 0)), "Optimizer steps logged"),
+            ("Checkpoints", str(summary.get("checkpoints_count", 0)), f"Champ: {champion['name'] if champion else 'None'}"),
+            ("Latest Elo", f"{latest_elo['elo']:.0f}" if latest_elo else "N/A", "Stockfish Anchor"),
         ]
+        card_h, gap = s(75), s(15)
+        card_w = (s(1000) - gap * (len(metrics) - 1)) // len(metrics)
+        for i, (label, value, sub) in enumerate(metrics):
+            cx = x + i * (card_w + gap)
+            self._card(surface, pygame.Rect(cx, y, card_w, card_h))
+            self._text(surface, self.font_sm, label, COLOR_TEXT_MUTED, cx + s(14), y + s(8))
+            self._text(surface, self.font_title, value, COLOR_PRIMARY if label == "Latest Elo" else COLOR_TEXT, cx + s(14), y + s(26))
+            self._text(surface, self.font_sm, sub, COLOR_TEXT_MUTED, cx + s(14), y + s(54))
+        y += s(95)
 
-        for i, (label, val, sub) in enumerate(metrics):
-            cx = x + i * (card_w + 20)
-            rect = pygame.Rect(cx, y, card_w, card_h)
-            pygame.draw.rect(surface, COLOR_PANEL_CARD, rect, border_radius=8)
-            pygame.draw.rect(surface, COLOR_BORDER, rect, width=1, border_radius=8)
-
-            lbl_s = self.font_sm.render(label, True, COLOR_TEXT_MUTED)
-            val_s = self.font_title.render(val, True, COLOR_PRIMARY if i == 3 else COLOR_TEXT)
-            sub_s = self.font_sm.render(sub, True, COLOR_TEXT_MUTED)
-
-            surface.blit(lbl_s, (cx + 14, y + 8))
-            surface.blit(val_s, (cx + 14, y + 26))
-            surface.blit(sub_s, (cx + 14, y + 54))
-
-        y += 95
-
-        # Elo History Section
-        h_rect = pygame.Rect(x, y, 620, 390)
-        pygame.draw.rect(surface, COLOR_PANEL_CARD, h_rect, border_radius=8)
-        pygame.draw.rect(surface, COLOR_BORDER, h_rect, width=1, border_radius=8)
-
-        sec_title = self.font_lg.render("Calibrated Elo History", True, COLOR_TEXT)
-        surface.blit(sec_title, (x + 16, y + 12))
-
-        table_header = self.font_mono.render(
+        elo_rows = [
+            (f"{r.get('checkpoint_name', ''):<14} {r.get('generation', 0):<5} {r.get('elo', 0):<8.0f} "
+             f"{'[%.0f, %.0f]' % (r.get('ci_low') or 0, r.get('ci_high') or 0):<14} {r.get('n_games', 0):<6} "
+             f"{str(r.get('created_at', ''))[:10]:<10}", COLOR_TEXT)
+            for r in elo_history[-11:]
+        ]
+        self._draw_table(
+            surface, pygame.Rect(x, y, s(620), s(390)), "Calibrated Elo History",
             f"{'Checkpoint':<14} {'Gen':<5} {'Elo':<8} {'95% CI':<14} {'Games':<6} {'Date':<10}",
-            True,
-            COLOR_TEXT_MUTED,
+            elo_rows, "No Elo estimates recorded yet. Run a benchmark!",
         )
-        surface.blit(table_header, (x + 16, y + 42))
-        pygame.draw.line(surface, COLOR_BORDER, (x + 16, y + 62), (x + 604, y + 62))
 
-        row_y = y + 70
-        if elo_history:
-            for row in elo_history[-11:]:  # show latest 11
-                ci = f"[{row.get('ci_low', 0):.0f}, {row.get('ci_high', 0):.0f}]"
-                dt = str(row.get("created_at", ""))[:10]
-                line_str = f"{row.get('checkpoint_name', ''):<14} {row.get('generation', 0):<5} {row.get('elo', 0):<8.0f} {ci:<14} {row.get('n_games', 0):<6} {dt:<10}"
-                surf_line = self.font_mono.render(line_str, True, COLOR_TEXT)
-                surface.blit(surf_line, (x + 16, row_y))
-                row_y += 26
-        else:
-            none_s = self.font_md.render("No Elo estimates recorded yet. Run a benchmark!", True, COLOR_TEXT_MUTED)
-            surface.blit(none_s, (x + 16, row_y))
-
-        # Checkpoints Section
-        cp_rect = pygame.Rect(x + 640, y, 360, 390)
-        pygame.draw.rect(surface, COLOR_PANEL_CARD, cp_rect, border_radius=8)
-        pygame.draw.rect(surface, COLOR_BORDER, cp_rect, width=1, border_radius=8)
-
-        cp_title = self.font_lg.render("Registered Checkpoints", True, COLOR_TEXT)
-        surface.blit(cp_title, (x + 656, y + 12))
-
-        cp_header = self.font_mono.render(f"{'Name':<12} {'Gen':<5} {'Promoted':<10}", True, COLOR_TEXT_MUTED)
-        surface.blit(cp_header, (x + 656, y + 42))
-        pygame.draw.line(surface, COLOR_BORDER, (x + 656, y + 62), (x + 984, y + 62))
-
-        cp_row_y = y + 70
-        if checkpoints:
-            for cp in checkpoints[-11:]:
-                prom = "Yes (Champ)" if getattr(cp, "promoted", False) else "No"
-                cp_str = f"{getattr(cp, 'name', ''):<12} {getattr(cp, 'generation', 0):<5} {prom:<10}"
-                col = COLOR_PRIMARY if getattr(cp, "promoted", False) else COLOR_TEXT
-                surf_cp = self.font_mono.render(cp_str, True, col)
-                surface.blit(surf_cp, (x + 656, cp_row_y))
-                cp_row_y += 26
-        else:
-            none_cp = self.font_md.render("No checkpoints saved yet.", True, COLOR_TEXT_MUTED)
-            surface.blit(none_cp, (x + 656, cp_row_y))
+        cp_rows = [
+            (f"{cp.name:<12} {cp.generation:<5} {'Yes (Champ)' if cp.promoted else 'No':<10}",
+             COLOR_PRIMARY if cp.promoted else COLOR_TEXT)
+            for cp in checkpoints[-11:]
+        ]
+        self._draw_table(
+            surface, pygame.Rect(x + s(640), y, s(360), s(390)), "Registered Checkpoints",
+            f"{'Name':<12} {'Gen':<5} {'Promoted':<10}", cp_rows, "No checkpoints saved yet.",
+        )

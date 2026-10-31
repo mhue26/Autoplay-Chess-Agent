@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 import numpy as np
 
 

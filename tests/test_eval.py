@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 import pytest
 
-from rl_chess.eval.elo import MatchResult, expected_score, fit_elo_bradley_terry
-from rl_chess.eval.benchmark import OpponentRung, find_stockfish_executable, play_benchmark_game
-from rl_chess.mcts.search import MCTS
-from rl_chess.net.model import create_model
+from rl_chess.elo import MatchResult, expected_score, fit_elo_bradley_terry
+from rl_chess.benchmark import OpponentRung, find_stockfish_executable, play_benchmark_game
+from rl_chess.mcts import MCTS
+from rl_chess.model import create_model
 
 
 def test_expected_score():
@@ -47,7 +46,7 @@ def test_fit_elo_all_wins_all_losses():
 
 
 def test_play_benchmark_game_random():
-    net = create_model("tiny", device="cpu")
+    net = create_model(6, 64, device="cpu")
     mcts = MCTS(net, device="cpu")
     rung = OpponentRung("Random-Player", elo=200.0)
 

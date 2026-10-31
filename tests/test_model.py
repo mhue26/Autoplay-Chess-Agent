@@ -1,16 +1,16 @@
-"""Tests for ChessNet neural network architectures and profiles."""
+"""Tests for ChessNet neural network."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from rl_chess.core.encoding import ACTION_SPACE_SIZE, NUM_INPUT_CHANNELS
-from rl_chess.net.model import ChessNet, create_model, resolve_device
+from rl_chess.encoding import ACTION_SPACE_SIZE, NUM_INPUT_CHANNELS
+from rl_chess.model import create_model
 
 
 def test_model_shapes_cpu():
-    model = create_model("tiny", device="cpu")
+    model = create_model(6, 64, device="cpu")
     model.eval()
 
     batch_size = 4
@@ -25,7 +25,7 @@ def test_model_shapes_cpu():
 
 
 def test_model_backprop():
-    model = create_model("tiny", device="cpu")
+    model = create_model(6, 64, device="cpu")
     model.train()
 
     dummy_input = torch.randn(2, NUM_INPUT_CHANNELS, 8, 8, device="cpu")
@@ -46,21 +46,17 @@ def test_model_backprop():
     assert model.value_head.fc2.weight.grad is not None
 
 
-def test_profiles():
-    net_tiny = create_model("tiny", device="cpu")
-    assert net_tiny.num_blocks == 6
-    assert net_tiny.channels == 64
-
-    net_small = create_model("small", device="cpu")
-    assert net_small.num_blocks == 10
-    assert net_small.channels == 128
+def test_network_dims():
+    net = create_model(6, 64, device="cpu")
+    assert net.num_blocks == 6
+    assert net.channels == 64
 
 
 def test_mps_execution_if_available():
     if not torch.backends.mps.is_available():
         pytest.skip("MPS not available on this host")
 
-    model = create_model("tiny", device="mps")
+    model = create_model(6, 64, device="mps")
     dummy_input = torch.randn(2, NUM_INPUT_CHANNELS, 8, 8, device="mps")
 
     policy_logits, value = model(dummy_input)

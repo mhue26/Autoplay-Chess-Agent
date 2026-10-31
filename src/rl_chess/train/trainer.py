@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from rl_chess.net.model import ChessNet, resolve_device
+from rl_chess.model import ChessNet, resolve_device
 from rl_chess.train.replay import ReplayBuffer
 
 
