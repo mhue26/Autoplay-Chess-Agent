@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -29,12 +30,15 @@ def play_selfplay_game(
     black_name: str = "AlphaZero",
     on_move: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_game_end: Optional[Callable[[Dict[str, Any]], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> Tuple[List[Sample], str, int]:
     """Play one self-play game; returns (training samples, PGN result, plies)."""
     mcts.reset()
     trajectory: List[Tuple[np.ndarray, np.ndarray, chess.Color]] = []
 
     def pick_move(board: chess.Board, history: List[chess.Board]) -> Optional[chess.Move]:
+        if stop_event and stop_event.is_set():
+            return None
         ply = len(trajectory)
         explore = ply < temp_decay_plies
         temperature = temp_init if explore else temp_final
@@ -45,7 +49,10 @@ def play_selfplay_game(
             num_simulations,
             temperature=temperature,
             add_noise=explore,
+            stop_event=stop_event,
         )
+        if stop_event and stop_event.is_set():
+            return None
         if move == chess.Move.null() or move not in board.legal_moves:
             return None
 
@@ -95,7 +102,15 @@ def play_selfplay_game(
 
         return move
 
-    board, plies = play_game(pick_move, max_plies, on_move=lambda _board, move: mcts.advance_root(move))
+    board, plies = play_game(
+        pick_move,
+        max_plies,
+        on_move=lambda _board, move: mcts.advance_root(move),
+        stop_event=stop_event,
+    )
+    if stop_event and stop_event.is_set():
+        return [], "", plies
+
     trajectory = trajectory[:plies]  # drop the pending entry if the final search returned no legal move
 
     result = result_string(board)
@@ -134,6 +149,7 @@ def play_arena_game(
     device: str = "auto",
     on_move: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_game_end: Optional[Callable[[Dict[str, Any]], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> Tuple[str, int]:
     """Play one arena game between two networks; returns (PGN result, plies)."""
     players = {chess.WHITE: MCTS(white_net, device=device), chess.BLACK: MCTS(black_net, device=device)}
@@ -141,7 +157,13 @@ def play_arena_game(
 
     def pick_move(board: chess.Board, history: List[chess.Board]) -> Optional[chess.Move]:
         nonlocal current_ply
-        move, pi, analysis = players[board.turn].search(board, history, num_simulations, temperature)
+        if stop_event and stop_event.is_set():
+            return None
+        move, pi, analysis = players[board.turn].search(
+            board, history, num_simulations, temperature, stop_event=stop_event
+        )
+        if stop_event and stop_event.is_set():
+            return None
         if move == chess.Move.null() or move not in board.legal_moves:
             return None
 
@@ -194,7 +216,9 @@ def play_arena_game(
         for p in players.values():
             p.advance_root(move)
 
-    board, plies = play_game(pick_move, max_plies, on_move=advance)
+    board, plies = play_game(pick_move, max_plies, on_move=advance, stop_event=stop_event)
+    if stop_event and stop_event.is_set():
+        return "", plies
     res = result_string(board)
     term_reason = termination_reason(board, plies, max_plies)
 
@@ -223,12 +247,15 @@ def evaluate_candidate(
     on_game_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
     cand_name: str = "Candidate",
     champ_name: str = "Champion",
+    stop_event: Optional[threading.Event] = None,
 ) -> Tuple[bool, float, List[Dict]]:
     """Arena match with alternating colors; returns (promoted, candidate score in [0, 1], game records)."""
     points = 0.0
     records = []
 
     for i in range(num_games):
+        if stop_event and stop_event.is_set():
+            break
         cand_is_white = i % 2 == 0
         white_net, black_net = (candidate_net, champion_net) if cand_is_white else (champion_net, candidate_net)
         white_name = cand_name if cand_is_white else champ_name
@@ -265,7 +292,11 @@ def evaluate_candidate(
             device=device,
             on_move=move_cb,
             on_game_end=game_end_cb,
+            stop_event=stop_event,
         )
+
+        if stop_event and stop_event.is_set():
+            break
 
         pts = 0.5 if res == "1/2-1/2" else float((res == "1-0") == cand_is_white)
         points += pts
@@ -282,5 +313,7 @@ def evaluate_candidate(
         if on_game_complete:
             on_game_complete(rec)
 
+    if stop_event and stop_event.is_set():
+        return False, (points / max(1, len(records))) if records else 0.0, records
     win_rate = points / max(1, num_games)
     return win_rate >= threshold, win_rate, records

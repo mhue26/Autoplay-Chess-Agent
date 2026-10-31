@@ -20,7 +20,7 @@ from rl_chess.gui.widgets import (
     ProgressBar,
     TabBar,
 )
-from rl_chess.gui.play import PlaySession, resolve_human_move
+from rl_chess.gui.play import PlaySession, promotion_choices, resolve_human_move
 from rl_chess.gui.workers import BackgroundWorker
 from rl_chess.mcts import CandidateMoveAnalysis, MCTSAnalysis
 
@@ -50,7 +50,10 @@ def test_game_end_overlay_render():
     notice = game_end_notice(board, human_color=chess.WHITE)
     renderer.draw_board(surface, board)
     renderer.draw_game_end_overlay(surface, board, notice, elapsed_ms=600, flipped=False)
-    assert surface.get_at((renderer.board_offset_x + 40, renderer.board_offset_y + 40))[3] == 255
+    card = renderer.game_end_card_rect()
+    card_pixel = surface.get_at((card.x + 10, card.y + 10))
+    assert card_pixel[:3] == (24, 26, 32)
+    assert card_pixel[3] == 255
 
 
 def test_renderer_coordinates():
@@ -213,9 +216,9 @@ def test_multi_tab_renderers():
     renderer.draw_stats_tab(surface, summary, elo_hist, [])
 
 
-def test_chess_app_headless_cycle():
+def test_chess_app_headless_cycle(app_config_path):
     pygame.init()
-    app = ChessApp(config_path="configs/config.yaml")
+    app = ChessApp(config_path=app_config_path)
     assert app.current_tab == "play"
 
     # Switch tabs
@@ -242,9 +245,9 @@ def test_chess_app_headless_cycle():
     assert app.train_panel.progress.progress == 0.1
 
 
-def test_high_resolution_mouse_coordinates_are_scaled():
+def test_high_resolution_mouse_coordinates_are_scaled(app_config_path):
     pygame.init()
-    app = ChessApp(config_path="configs/config.yaml")
+    app = ChessApp(config_path=app_config_path)
 
     class FakeWindow:
         def to_surface(self, pos):
@@ -281,11 +284,128 @@ def test_background_worker_reports_events():
     ]
 
 
+def test_background_worker_instant_stop_during_pace():
+    import time
+    q: queue.Queue = queue.Queue()
+
+    def job(on_event, stop_event):
+        on_event({"type": "move"})
+
+    worker = BackgroundWorker("train", job, q)
+    worker.set_pace_delay(5.0)
+    t0 = time.time()
+    assert worker.start()
+    time.sleep(0.05)
+    worker.request_stop()
+    worker._thread.join(timeout=1.0)
+    elapsed = time.time() - t0
+    assert not worker.is_running()
+    assert elapsed < 2.0
+
+
 def test_resolve_human_move_promotion_and_illegal():
     board = chess.Board("8/P6k/8/8/8/8/8/K7 w - - 0 1")
-    assert resolve_human_move(board, chess.A7, chess.A8) == chess.Move(chess.A7, chess.A8, promotion=chess.QUEEN)
+    # Promotions are not auto-resolved; they require promotion choice
+    assert resolve_human_move(board, chess.A7, chess.A8) is None
+    assert promotion_choices(board, chess.A7, chess.A8) == [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
     assert resolve_human_move(board, chess.A7, chess.A7) is None
     assert resolve_human_move(board, chess.A1, chess.H8) is None
+
+    # Normal non-promotion moves are resolved
+    board_start = chess.Board()
+    assert resolve_human_move(board_start, chess.E2, chess.E4) == chess.Move.from_uci("e2e4")
+
+
+def test_play_session_promotion_flow():
+    board = chess.Board("8/P6k/8/8/8/8/8/K7 w - - 0 1")
+    session = PlaySession(chess.WHITE, drag_threshold=6)
+    session.board = board
+
+    # Click a7 then a8 -> sets pending promotion
+    assert session.mouse_down((0, 0), chess.A7) is None
+    assert session.pending_promotion is None
+    assert session.mouse_up(chess.A7) is None
+    assert session.mouse_down((0, 0), chess.A8) is None
+    assert session.pending_promotion == (chess.A7, chess.A8)
+
+    # Cancel promotion
+    session.cancel_promotion()
+    assert session.pending_promotion is None
+    assert session.board.piece_at(chess.A7) == chess.Piece(chess.PAWN, chess.WHITE)
+
+    # Drag a7 to a8 -> sets pending promotion
+    session.mouse_down((10, 10), chess.A7)
+    session.mouse_motion((40, 40))
+    assert session.is_dragging
+    assert session.mouse_up(chess.A8) is None
+    assert session.pending_promotion == (chess.A7, chess.A8)
+
+    # Choose Knight underpromotion
+    move = session.choose_promotion(chess.KNIGHT)
+    assert move == chess.Move(chess.A7, chess.A8, promotion=chess.KNIGHT)
+    session.push(move)
+    assert session.pending_promotion is None
+    assert session.board.piece_at(chess.A8) == chess.Piece(chess.KNIGHT, chess.WHITE)
+
+
+def test_renderer_promotion_picker():
+    pygame.init()
+    renderer = ChessRenderer(board_size=560)
+    surface = pygame.Surface((1040, 620))
+
+    rects = renderer.promotion_rects(chess.A8, flipped=False)
+    assert len(rects) == 4
+    assert [p for _, p in rects] == [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
+
+    # Test hit-testing
+    q_rect = rects[0][0]
+    n_rect = rects[3][0]
+    assert renderer.promotion_choice_at(q_rect.center, chess.A8, flipped=False) == chess.QUEEN
+    assert renderer.promotion_choice_at(n_rect.center, chess.A8, flipped=False) == chess.KNIGHT
+    assert renderer.promotion_choice_at((0, 0), chess.A8, flipped=False) is None
+
+    # Test draw
+    renderer.draw_promotion_picker(surface, chess.A8, chess.WHITE, flipped=False, hover_pos=q_rect.center)
+    renderer.draw_promotion_picker(surface, chess.A1, chess.BLACK, flipped=True)
+
+
+def test_app_promotion_picker_events(app_config_path):
+    pygame.init()
+    app = ChessApp(config_path=app_config_path)
+    app.session.board = chess.Board("8/P6k/8/8/8/8/8/K7 w - - 0 1")
+
+    # Click a7 to select, then click a8
+    a7_rect = app.renderer.square_to_rect(chess.A7)
+    a8_rect = app.renderer.square_to_rect(chess.A8)
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": a7_rect.center}))
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1, "pos": a7_rect.center}))
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": a8_rect.center}))
+    assert app.session.pending_promotion == (chess.A7, chess.A8)
+
+    # Render picker
+    app._draw()
+
+    # Cancel with Escape
+    app._handle_play_event(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE}))
+    assert app.session.pending_promotion is None
+
+    # Re-trigger promotion via drag
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": a7_rect.center}))
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEMOTION, {"pos": (a7_rect.centerx, a7_rect.centery + 50), "rel": (0, 50)}))
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1, "pos": a8_rect.center}))
+    assert app.session.pending_promotion == (chess.A7, chess.A8)
+
+    # Click the 4th choice (Knight) in the promotion picker
+    rects = app.renderer.promotion_rects(chess.A8)
+    knight_rect, piece_type = rects[3]
+    assert piece_type == chess.KNIGHT
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": knight_rect.center}))
+    assert app.session.pending_promotion is None
+    assert app.session.board.piece_at(chess.A8) == chess.Piece(chess.KNIGHT, chess.WHITE)
+    assert app.session.board.is_game_over()
+    assert app.ledger.get_stats_summary()["human_games"] == 1
+    app.new_game()
+    assert not app.session.board.is_game_over()
 
 
 def test_play_session_click_and_drag():
@@ -313,9 +433,9 @@ def test_play_session_click_and_drag():
     assert not session.is_dragging
 
 
-def test_train_tab_visualizer_and_toggle():
+def test_train_tab_visualizer_and_toggle(app_config_path):
     pygame.init()
-    app = ChessApp(config_path="configs/config.yaml")
+    app = ChessApp(config_path=app_config_path)
 
     # Switch to train tab
     app.tab_bar.active_tab = "train"
@@ -381,9 +501,9 @@ def test_train_tab_visualizer_and_toggle():
     assert app.train_live_btn.text == "Paused"
 
 
-def test_training_toolbar_controls_fit_without_overlap():
+def test_training_toolbar_controls_fit_without_overlap(app_config_path):
     pygame.init()
-    app = ChessApp(config_path="configs/config.yaml")
+    app = ChessApp(config_path=app_config_path)
     controls = [
         *app.train_panel.selectors,
         app.train_panel.action,
@@ -400,3 +520,156 @@ def test_training_toolbar_controls_fit_without_overlap():
         assert control.rect.right <= 1020
     for index, control in enumerate(controls):
         assert all(not control.rect.colliderect(other.rect) for other in controls[index + 1:])
+
+
+def test_play_game_end_popup_and_new_game(app_config_path):
+    pygame.init()
+    app = ChessApp(config_path=app_config_path)
+
+    # Set up checkmate position (Fool's Mate: White is checkmated)
+    checkmate_board = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+    app.session.board = checkmate_board
+    assert app.session.board.is_checkmate()
+    assert app.session.board.is_game_over()
+
+    # Draw the play tab with the endgame popup
+    app._draw()
+
+    # Verify game end button rect is inside the modal card
+    btn_rect = app.play_new_game_btn.rect
+    card_rect = app.renderer.game_end_card_rect()
+    assert card_rect.contains(btn_rect)
+
+    # Click outside the button (e.g. at 0, 0) should not reset the game
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": (0, 0)}))
+    assert app.session.board.is_game_over()
+
+    # Click on the New Game button resets the board to the start position
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": btn_rect.center}))
+    assert not app.session.board.is_game_over()
+    assert app.session.board.fen() == chess.STARTING_FEN
+
+    # Test draw condition (Stalemate)
+    stalemate_board = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    app.session.board = stalemate_board
+    assert app.session.board.is_stalemate()
+    assert app.session.board.is_game_over()
+
+    app._draw()
+    app._handle_play_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"button": 1, "pos": btn_rect.center}))
+    assert not app.session.board.is_game_over()
+    assert app.session.board.fen() == chess.STARTING_FEN
+
+
+def test_play_session_move_sans():
+    session = PlaySession(chess.WHITE)
+    assert session.get_move_sans() == []
+
+    session.push(chess.Move.from_uci("e2e4"))
+    assert session.get_move_sans() == ["e4"]
+
+    session.push(chess.Move.from_uci("e7e5"))
+    assert session.get_move_sans() == ["e4", "e5"]
+
+    session.push(chess.Move.from_uci("g1f3"))
+    assert session.get_move_sans() == ["e4", "e5", "Nf3"]
+
+    session.reset()
+    assert session.get_move_sans() == []
+
+    # Sync from board with move_stack
+    board = chess.Board()
+    board.push_san("d4")
+    board.push_san("d5")
+    session.board = board
+    assert session.get_move_sans() == ["d4", "d5"]
+
+
+def test_play_moves_card_layout_and_render():
+    pygame.init()
+    renderer = ChessRenderer(board_size=560)
+    surface = pygame.Surface((1040, 620))
+
+    card = renderer.play_moves_card_rect()
+    assert card.left >= renderer.panel_x
+    assert card.right <= renderer.panel_x + renderer.panel_width
+    assert card.bottom <= renderer.board_offset_y + renderer.board_size
+    assert renderer.play_moves_visible_rows() >= 8
+
+    board = chess.Board()
+    # 1. Empty moves
+    renderer.draw_analysis_panel(
+        surface=surface,
+        board=board,
+        analysis=None,
+        agent_name="Agent",
+        is_thinking=False,
+        move_sans=[],
+    )
+
+    # 2. Many moves to trigger scrollbar and material diff (White up a Queen)
+    board_up = chess.Board("rnb1kbnr/pppp1ppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1")
+    many_moves = [
+        "e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6",
+        "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O",
+        "h3", "Nb8", "d4", "Nbd7", "c4", "c6",
+    ]
+    renderer.draw_analysis_panel(
+        surface=surface,
+        board=board_up,
+        analysis=None,
+        agent_name="Agent",
+        is_thinking=False,
+        move_sans=many_moves,
+        move_scroll=2,
+    )
+    # Check that pixel within card is drawn with card background
+    assert surface.get_at((card.x + 10, card.y + 10))[3] == 255
+
+
+def test_play_moves_scroll_and_autoscroll(app_config_path):
+    pygame.init()
+    app = ChessApp(config_path=app_config_path)
+    card = app.renderer.play_moves_card_rect()
+
+    # Play 24 half-moves (12 rows) so moves exceed visible rows (~10 rows)
+    moves_uci = [
+        "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6",
+        "e1g1", "f8e7", "f1e1", "b7b5", "a4b3", "d7d6", "c2c3", "e8g8",
+        "h2h3", "c6b8", "d2d4", "b8d7", "b1d2", "c8b7", "b3c2", "c7c5",
+    ]
+    for uci in moves_uci:
+        app._apply_move(chess.Move.from_uci(uci))
+
+    total_rows = (len(app.session.get_move_sans()) + 1) // 2
+    visible = app.renderer.play_moves_visible_rows()
+    assert total_rows > visible
+    # After pushing moves with auto_scroll True, scroll offset should be at max
+    expected_max = total_rows - visible
+    assert app.play_move_scroll == expected_max
+    assert app.play_move_auto_scroll is True
+
+    # Mousewheel scroll up over card
+    wheel_up = pygame.event.Event(pygame.MOUSEWHEEL, {"y": 2, "pos": card.center})
+    app._handle_play_event(wheel_up)
+    assert app.play_move_scroll == expected_max - 2
+    assert app.play_move_auto_scroll is False
+
+    # Mousewheel scroll down back to bottom
+    wheel_down = pygame.event.Event(pygame.MOUSEWHEEL, {"y": -5, "pos": card.center})
+    app._handle_play_event(wheel_down)
+    assert app.play_move_scroll == expected_max
+    assert app.play_move_auto_scroll is True
+
+    # Mousewheel outside card should do nothing
+    prev_scroll = app.play_move_scroll
+    wheel_outside = pygame.event.Event(pygame.MOUSEWHEEL, {"y": 1, "pos": (10, 10)})
+    app._handle_play_event(wheel_outside)
+    assert app.play_move_scroll == prev_scroll
+
+    # new_game resets scroll
+    app.new_game()
+    assert app.play_move_scroll == 0
+    assert app.session.get_move_sans() == []
+
+

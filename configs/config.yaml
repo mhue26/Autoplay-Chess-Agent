@@ -15,7 +15,7 @@ mcts:
 
 selfplay:
   games_per_generation: 25
-  max_plies: 300
+  max_plies: 512
 
 training:
   batch_size: 128

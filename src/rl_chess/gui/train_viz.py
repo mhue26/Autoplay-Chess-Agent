@@ -582,8 +582,6 @@ class TrainingVisualizer:
         s = self.s
         board, move_rec = self.state.get_viewing_board_and_move()
         game = self.state.get_viewing_game()
-        ply = self.state.get_viewing_ply()
-        total_plies = len(game.moves) if game else 0
 
         # Header card above board (y=172..204)
         hdr_rect = pygame.Rect(s(20), s(172), s(360), s(32))
@@ -651,26 +649,6 @@ class TrainingVisualizer:
             last_move=last_move,
             analysis=analysis,
         )
-
-        # Scrubber strip below board (y=578..608)
-        scrub_rect = pygame.Rect(s(20), s(578), s(360), s(30))
-        pygame.draw.rect(surface, COLOR_PANEL_CARD, scrub_rect, border_radius=s(6))
-        pygame.draw.rect(surface, COLOR_BORDER, scrub_rect, width=1, border_radius=s(6))
-
-        scrub_txt = f"Ply {ply}/{total_plies}" if total_plies > 0 else "Ply 0/0"
-        if game and game.is_finished:
-            scrub_txt += f" • Result: {game.result}"
-        txt_s = self.board_renderer.font_sm.render(scrub_txt, True, COLOR_TEXT)
-        surface.blit(txt_s, (scrub_rect.x + s(10), scrub_rect.y + s(6)))
-
-        # Mini progress indicator on scrubber
-        if total_plies > 0:
-            frac = ply / total_plies
-            bar_w = int(s(100) * frac)
-            bx = scrub_rect.right - s(110)
-            pygame.draw.rect(surface, (50, 55, 65), (bx, scrub_rect.y + s(10), s(100), s(10)), border_radius=s(3))
-            if bar_w > 0:
-                pygame.draw.rect(surface, COLOR_PRIMARY, (bx, scrub_rect.y + s(10), bar_w, s(10)), border_radius=s(3))
 
     # ------------------------------------------------------------------
     # 3. Middle Column: Move History + Finished Games List

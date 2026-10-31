@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from pathlib import Path
 import numpy as np
 
@@ -123,3 +124,45 @@ def test_resolve_arena_games_scales_with_self_play_cap():
     assert resolve_arena_games(25, cfg) == 20
     assert resolve_arena_games(50, cfg) == 20
     assert resolve_arena_games(10, {"num_games": 15}) == 10
+
+
+def test_selfplay_instant_stop():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pgn_file = Path(tmp_dir) / "test.pgn"
+        net = create_model(6, 64, device="cpu")
+        mcts = MCTS(net, device="cpu")
+        stop_event = threading.Event()
+        stop_event.set()
+
+        samples, result, plies = play_selfplay_game(
+            mcts=mcts,
+            num_simulations=5,
+            max_plies=4,
+            pgn_path=pgn_file,
+            stop_event=stop_event,
+        )
+
+        assert samples == []
+        assert result == ""
+        assert plies == 0
+        assert not pgn_file.exists()
+
+
+def test_arena_instant_stop():
+    net1 = create_model(6, 64, device="cpu")
+    net2 = create_model(6, 64, device="cpu")
+    stop_event = threading.Event()
+    stop_event.set()
+
+    promoted, win_rate, records = evaluate_candidate(
+        candidate_net=net1,
+        champion_net=net2,
+        num_games=5,
+        num_simulations=5,
+        threshold=0.5,
+        device="cpu",
+        stop_event=stop_event,
+    )
+
+    assert not promoted
+    assert len(records) == 0

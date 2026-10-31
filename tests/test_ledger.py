@@ -95,6 +95,10 @@ def test_ledger_flow():
         assert summary["selfplay_games"] == 1
         assert summary["selfplay_positions_estimated"] == 42
         assert summary["human_games"] == 1
+
+        ledger.clear_human_games()
+        summary = ledger.get_stats_summary()
+        assert summary["human_games"] == 0
         assert summary["training_steps"] == 1
         assert summary["checkpoints_count"] == 2
         assert summary["champion"]["name"] == "chk_gen1"

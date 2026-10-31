@@ -9,18 +9,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import chess
 import pygame
 
+from rl_chess.game import format_material_balance, material_balance_white
+from rl_chess.gui.game_end import checkmated_king_square
 from rl_chess.gui.widgets import (
     COLOR_BORDER,
+    COLOR_DANGER,
     COLOR_PANEL,
     COLOR_PANEL_CARD,
     COLOR_PRIMARY,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
+    _fit_text,
 )
 from rl_chess.mcts import CandidateMoveAnalysis, MCTSAnalysis
 
 Color = Tuple[int, ...]
 
+COLOR_POPUP_BG = (24, 26, 32)
 COLOR_LIGHT_SQ = (240, 217, 181)
 COLOR_DARK_SQ = (181, 136, 99)
 COLOR_SELECTED = (205, 210, 106, 180)
@@ -206,6 +211,23 @@ class ChessRenderer:
             ]
             pygame.draw.polygon(surface, color, [end, *head])
 
+    def game_end_card_rect(self) -> pygame.Rect:
+        """Modal card rectangle centered on the board."""
+        s = self.s
+        card_w, card_h = s(320), s(180)
+        card_x = self.board_offset_x + (self.board_size - card_w) // 2
+        card_y = self.board_offset_y + (self.board_size - card_h) // 2
+        return pygame.Rect(card_x, card_y, card_w, card_h)
+
+    def game_end_button_rect(self) -> pygame.Rect:
+        """New Game button rectangle inside the endgame modal card."""
+        s = self.s
+        card = self.game_end_card_rect()
+        btn_w, btn_h = s(140), s(38)
+        btn_x = card.centerx - btn_w // 2
+        btn_y = card.y + s(114)
+        return pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+
     def draw_game_end_overlay(
         self,
         surface: pygame.Surface,
@@ -213,18 +235,124 @@ class ChessRenderer:
         notice: Any,
         elapsed_ms: int = 0,
         flipped: bool = False,
+        new_game_btn: Optional[Any] = None,
     ) -> None:
-        """Render banner overlay over the board when the game is completed."""
+        """Render dimmed board and modal card popup over the board when the game is completed."""
         s = self.s
-        card = pygame.Rect(self.board_offset_x + s(40), self.board_offset_y + s(200), self.board_size - s(80), s(120))
-        overlay = pygame.Surface((card.width, card.height), pygame.SRCALPHA)
-        overlay.fill((20, 22, 25, 235))
-        surface.blit(overlay, (card.x, card.y))
+
+        # 1. On checkmate, highlight the mated king with checkmated_king_square before the dim
+        mated_sq = checkmated_king_square(board)
+        if mated_sq is not None:
+            self._highlight(surface, (220, 53, 69, 180), mated_sq, flipped)
+            piece = board.piece_at(mated_sq)
+            if piece is not None:
+                self._blit_piece(surface, self.square_to_rect(mated_sq, flipped).center, piece)
+
+        # 2. Dim the board
+        dim = pygame.Surface((self.board_size, self.board_size), pygame.SRCALPHA)
+        dim.fill((10, 12, 16, 160))
+        surface.blit(dim, (self.board_offset_x, self.board_offset_y))
+
+        # 3. Center a card on the board
+        card = self.game_end_card_rect()
+        pygame.draw.rect(surface, COLOR_POPUP_BG, card, border_radius=s(8))
         pygame.draw.rect(surface, COLOR_BORDER, card, width=1, border_radius=s(8))
+
+        # 4. Title and termination subtitle
         tone = getattr(notice, "tone", "draw")
-        tone_color = COLOR_PRIMARY if tone == "win" else ((220, 53, 69) if tone == "loss" else COLOR_TEXT)
-        self._text(surface, self.font_lg, getattr(notice, "title", "Game Over"), tone_color, card.x + s(20), card.y + s(25))
-        self._text(surface, self.font_md, getattr(notice, "subtitle", ""), COLOR_TEXT_MUTED, card.x + s(20), card.y + s(65))
+        tone_color = COLOR_PRIMARY if tone == "win" else (COLOR_DANGER if tone == "loss" else COLOR_TEXT)
+        title = getattr(notice, "title", "Game Over")
+        subtitle = getattr(notice, "subtitle", "")
+
+        title_surf = self.font_title.render(title, True, tone_color)
+        surface.blit(title_surf, title_surf.get_rect(center=(card.centerx, card.y + s(38))))
+
+        if subtitle:
+            sub_surf = _fit_text(self.font_md, subtitle, card.width - s(32), COLOR_TEXT_MUTED)
+            surface.blit(sub_surf, sub_surf.get_rect(center=(card.centerx, card.y + s(74))))
+
+        # 5. Render New Game button if provided
+        if new_game_btn is not None:
+            new_game_btn.render(surface, self.font_md)
+
+    def promotion_rects(
+        self, to_sq: chess.Square, flipped: bool = False
+    ) -> List[Tuple[pygame.Rect, chess.PieceType]]:
+        """Return (rect, piece_type) pairs for the vertical promotion picker on to_sq's file."""
+        dest_rect = self.square_to_rect(to_sq, flipped)
+        rel_y = dest_rect.y - self.board_offset_y
+        row = rel_y // self.sq_size
+        step = 1 if row < 4 else -1
+        pieces = [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
+        return [
+            (
+                pygame.Rect(
+                    dest_rect.x,
+                    dest_rect.y + i * step * self.sq_size,
+                    self.sq_size,
+                    self.sq_size,
+                ),
+                p,
+            )
+            for i, p in enumerate(pieces)
+        ]
+
+    def promotion_choice_at(
+        self, pos: Tuple[int, int], to_sq: chess.Square, flipped: bool = False
+    ) -> Optional[chess.PieceType]:
+        """Return which promotion piece was clicked, or None if outside the picker."""
+        for rect, piece_type in self.promotion_rects(to_sq, flipped):
+            if rect.collidepoint(pos):
+                return piece_type
+        return None
+
+    def draw_promotion_picker(
+        self,
+        surface: pygame.Surface,
+        to_sq: chess.Square,
+        color: chess.Color,
+        flipped: bool = False,
+        hover_pos: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """Render the 4-choice vertical promotion picker popup on the board."""
+        rects = self.promotion_rects(to_sq, flipped)
+        if not rects:
+            return
+
+        min_y = min(r.y for r, _ in rects)
+        max_y = max(r.bottom for r, _ in rects)
+        panel_rect = pygame.Rect(rects[0][0].x, min_y, self.sq_size, max_y - min_y)
+
+        # Semi-transparent shadow around the panel
+        shadow_rect = panel_rect.inflate(self.s(8), self.s(8))
+        shadow_surf = pygame.Surface((shadow_rect.width, shadow_rect.height), pygame.SRCALPHA)
+        shadow_surf.fill((0, 0, 0, 110))
+        surface.blit(shadow_surf, shadow_rect)
+
+        # Panel background: dark for white pieces, light for black pieces for maximum contrast
+        bg_color = (36, 40, 48) if color == chess.WHITE else (235, 238, 242)
+        pygame.draw.rect(surface, bg_color, panel_rect, border_radius=self.s(6))
+        pygame.draw.rect(surface, COLOR_PRIMARY, panel_rect, width=self.s(2), border_radius=self.s(6))
+
+        for rect, piece_type in rects:
+            if hover_pos and rect.collidepoint(hover_pos):
+                hover_bg = (56, 62, 74) if color == chess.WHITE else (210, 215, 222)
+                pygame.draw.rect(surface, hover_bg, rect, border_radius=self.s(4))
+            self._blit_piece(surface, rect.center, chess.Piece(piece_type, color))
+
+        # Separators between choice squares
+        for i in range(len(rects) - 1):
+            r1, _ = rects[i]
+            r2, _ = rects[i + 1]
+            sep_y = r1.bottom if r1.y < r2.y else r1.y
+            sep_color = (60, 65, 75) if color == chess.WHITE else (200, 205, 212)
+            pygame.draw.line(
+                surface,
+                sep_color,
+                (panel_rect.x + self.s(4), sep_y),
+                (panel_rect.right - self.s(4), sep_y),
+                1,
+            )
 
     # -- play tab side panel --------------------------------------------
 
@@ -250,6 +378,22 @@ class ChessRenderer:
             label = f"{message}{'.' * phase}"
         self._text(surface, self.font_sm, label, COLOR_TEXT, rect.x + s(28), rect.y + s(5))
 
+    def play_moves_card_rect(self) -> pygame.Rect:
+        """Card rectangle for Move List in the Live Analysis panel."""
+        s = self.s
+        bar_w = self.panel_width - 2 * s(16)
+        x = self.panel_x + s(16)
+        y = self.board_offset_y + s(310)
+        h = self.board_size - s(324)
+        return pygame.Rect(x, y, bar_w, h)
+
+    def play_moves_visible_rows(self) -> int:
+        """Number of full move rows visible inside the Move List card."""
+        s = self.s
+        card = self.play_moves_card_rect()
+        clip_h = card.height - s(36)
+        return max(1, clip_h // s(20))
+
     def draw_analysis_panel(
         self,
         surface: pygame.Surface,
@@ -259,6 +403,9 @@ class ChessRenderer:
         is_thinking: bool,
         weights_status: str = "",
         weights_loading: bool = False,
+        notice: Optional[Any] = None,
+        move_sans: Optional[List[str]] = None,
+        move_scroll: int = 0,
     ) -> None:
         s = self.s
         panel = pygame.Rect(self.panel_x, self.board_offset_y, self.panel_width, self.board_size)
@@ -269,8 +416,18 @@ class ChessRenderer:
         self._text(surface, self.font_lg, "Live Analysis", COLOR_TEXT, x, y)
         y += s(26)
 
-        turn = "Agent thinking..." if is_thinking else ("White to move" if board.turn == chess.WHITE else "Black to move")
-        self._text(surface, self.font_md, f"Turn: {turn}", COLOR_PRIMARY if is_thinking else COLOR_TEXT_MUTED, x, y)
+        if notice is not None:
+            sub = getattr(notice, "subtitle", "")
+            turn_label = f"Result: {notice.title} ({sub})" if sub else f"Result: {notice.title}"
+            tone = getattr(notice, "tone", "draw")
+            turn_color = COLOR_PRIMARY if tone == "win" else (COLOR_DANGER if tone == "loss" else COLOR_TEXT)
+        elif is_thinking:
+            turn_label = "Turn: Agent thinking..."
+            turn_color = COLOR_PRIMARY
+        else:
+            turn_label = "Turn: White to move" if board.turn == chess.WHITE else "Turn: Black to move"
+            turn_color = COLOR_TEXT_MUTED
+        self._text(surface, self.font_md, turn_label, turn_color, x, y)
         y += s(22)
         self._text(surface, self.font_sm, f"Agent: {agent_name}", COLOR_TEXT_MUTED, x, y)
         y += s(22)
@@ -299,20 +456,110 @@ class ChessRenderer:
         y += s(26)
 
         # Candidate table
-        card = pygame.Rect(x, y, bar_w, s(175))
+        card = pygame.Rect(x, y, bar_w, s(144))
         pygame.draw.rect(surface, COLOR_PANEL_CARD, card, border_radius=s(8))
         tx = self.panel_x + s(24)
-        self._text(surface, self.font_md, "Top Candidate Moves (MCTS)", COLOR_TEXT, tx, y + s(10))
-        self._text(surface, self.font_sm, "Move        Visits     Share        Q", COLOR_TEXT_MUTED, tx, y + s(32))
+        self._text(surface, self.font_md, "Top Candidate Moves (MCTS)", COLOR_TEXT, tx, y + s(8))
+        self._text(surface, self.font_sm, "Move        Visits     Share        Q", COLOR_TEXT_MUTED, tx, y + s(28))
 
-        row_y = y + s(52)
+        row_y = y + s(48)
         if analysis and analysis.candidates:
             for idx, c in enumerate(analysis.candidates[:4]):
                 row = f"#{idx + 1}  {c.san:<8} {c.visits:<8} {c.visit_share * 100:>5.1f}%   {c.q_value:>+5.2f}"
                 self._text(surface, self.font_sm, row, COLOR_PRIMARY if idx == 0 else COLOR_TEXT, tx, row_y)
-                row_y += s(24)
+                row_y += s(22)
         else:
             self._text(surface, self.font_sm, "Awaiting search...", COLOR_TEXT_MUTED, tx, row_y)
+
+        # Move List & Material Difference card
+        moves_card = self.play_moves_card_rect()
+        pygame.draw.rect(surface, COLOR_PANEL_CARD, moves_card, border_radius=s(6))
+        pygame.draw.rect(surface, COLOR_BORDER, moves_card, width=1, border_radius=s(6))
+
+        # Header: Title on left, Material Diff on right
+        hdr_txt = self.font_md.render("Move List", True, COLOR_TEXT)
+        surface.blit(hdr_txt, (moves_card.x + s(10), moves_card.y + s(7)))
+
+        balance = material_balance_white(board)
+        mat_lbl = format_material_balance(board)
+        if balance > 0:
+            mat_color = (235, 235, 245)
+        elif balance < 0:
+            mat_color = (160, 160, 175)
+        else:
+            mat_color = COLOR_TEXT_MUTED
+        txt_mat = self.font_sm.render(mat_lbl, True, mat_color)
+        surface.blit(txt_mat, (moves_card.right - txt_mat.get_width() - s(10), moves_card.y + s(8)))
+
+        # Header divider
+        pygame.draw.line(surface, COLOR_BORDER, (moves_card.x, moves_card.y + s(28)), (moves_card.right, moves_card.y + s(28)))
+
+        # Move list items
+        moves_clip = pygame.Rect(moves_card.x + s(6), moves_card.y + s(32), moves_card.width - s(12), moves_card.height - s(36))
+        sans = move_sans or []
+        total_rows = (len(sans) + 1) // 2
+
+        if not sans:
+            no_moves = self.font_sm.render("No moves played yet", True, COLOR_TEXT_MUTED)
+            surface.blit(no_moves, (moves_clip.x + s(10), moves_clip.y + s(8)))
+        else:
+            row_h = s(20)
+            visible_rows = max(1, moves_clip.height // row_h)
+            max_scroll = max(0, total_rows - visible_rows)
+            scroll = max(0, min(max_scroll, move_scroll))
+
+            orig_clip = surface.get_clip()
+            surface.set_clip(moves_clip)
+
+            num_col_w = s(32)
+            half_gap = s(6)
+            sb_pad = s(8) if total_rows > visible_rows else 0
+            half_w = max(s(48), (moves_clip.width - num_col_w - half_gap - sb_pad) // 2)
+            white_x = moves_clip.x + num_col_w
+            black_x = white_x + half_w + half_gap
+
+            for row_i in range(total_rows):
+                row_y = moves_clip.y + (row_i - scroll) * row_h
+                if row_y + row_h < moves_clip.y or row_y > moves_clip.bottom:
+                    continue
+
+                # Move number: " 1."
+                num_surf = self.font_mono.render(f"{row_i + 1:>3}.", True, COLOR_TEXT_MUTED)
+                surface.blit(num_surf, (moves_clip.x + s(2), row_y + s(2)))
+
+                # White move
+                w_idx = row_i * 2
+                is_active_w = (w_idx == len(sans) - 1)
+                cell_w = pygame.Rect(white_x, row_y, half_w, row_h)
+                if is_active_w:
+                    pygame.draw.rect(surface, (36, 60, 42), cell_w, border_radius=s(3))
+                col_w = COLOR_PRIMARY if is_active_w else COLOR_TEXT
+                surf_w = self.font_mono.render(sans[w_idx], True, col_w)
+                surface.blit(surf_w, (cell_w.x + s(4), row_y + s(2)))
+
+                # Black move
+                b_idx = w_idx + 1
+                if b_idx < len(sans):
+                    is_active_b = (b_idx == len(sans) - 1)
+                    cell_b = pygame.Rect(black_x, row_y, half_w, row_h)
+                    if is_active_b:
+                        pygame.draw.rect(surface, (36, 60, 42), cell_b, border_radius=s(3))
+                    col_b = COLOR_PRIMARY if is_active_b else COLOR_TEXT
+                    surf_b = self.font_mono.render(sans[b_idx], True, col_b)
+                    surface.blit(surf_b, (cell_b.x + s(4), row_y + s(2)))
+
+            surface.set_clip(orig_clip)
+
+            # Scrollbar indicator
+            if total_rows > visible_rows:
+                sb_w = s(4)
+                sb_x = moves_card.right - s(8)
+                sb_y = moves_clip.y + s(2)
+                sb_h = moves_clip.height - s(4)
+                pygame.draw.rect(surface, (40, 43, 48), (sb_x, sb_y, sb_w, sb_h), border_radius=s(2))
+                thumb_h = max(s(14), int(sb_h * (visible_rows / total_rows)))
+                thumb_y = sb_y + int((sb_h - thumb_h) * (scroll / max_scroll)) if max_scroll > 0 else sb_y
+                pygame.draw.rect(surface, (90, 95, 105), (sb_x, thumb_y, sb_w, thumb_h), border_radius=s(2))
 
     # -- dashboard tabs --------------------------------------------------
 

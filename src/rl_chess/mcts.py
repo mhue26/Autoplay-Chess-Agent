@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -128,12 +129,16 @@ class MCTS:
         num_simulations: int = 100,
         temperature: float = 1.0,
         add_noise: bool = False,
+        stop_event: Optional[threading.Event] = None,
     ) -> Tuple[chess.Move, np.ndarray, MCTSAnalysis]:
         """Run MCTS from ``board``.
 
         Returns the chosen move, the action probability vector pi (4672,), and UI analysis.
         With no legal moves, returns a null move, a zero pi, and an empty analysis.
         """
+        if stop_event and stop_event.is_set():
+            return chess.Move.null(), np.zeros(ACTION_SPACE_SIZE, dtype=np.float32), MCTSAnalysis(0.0, 0)
+
         if self.root is None or self.root.board.fen() != board.fen():
             self.root = MCTSNode(board.copy())
         root = self.root
@@ -150,6 +155,8 @@ class MCTS:
                 root.priors[a] = (1.0 - self.dirichlet_eps) * root.priors[a] + self.dirichlet_eps * float(n)
 
         for _ in range(num_simulations):
+            if stop_event and stop_event.is_set():
+                return chess.Move.null(), np.zeros(ACTION_SPACE_SIZE, dtype=np.float32), MCTSAnalysis(0.0, 0)
             self._simulate(root, history)
 
         actions = root.legal_actions

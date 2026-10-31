@@ -17,10 +17,19 @@ import torch
 from rl_chess.benchmark import run_benchmark
 from rl_chess.config import DEFAULT_CONFIG_PATH, get_paths, load_config
 from rl_chess.gui.display import HiDPIWindow
+from rl_chess.gui.game_end import game_end_notice
 from rl_chess.gui.play import PlaySession
 from rl_chess.gui.renderer import ChessRenderer
 from rl_chess.gui.train_viz import TrainingVisualizer, TrainingVizState
-from rl_chess.gui.widgets import COLOR_BG, Button, CycleButton, JobPanel, TabBar
+from rl_chess.gui.widgets import (
+    COLOR_BG,
+    COLOR_PRIMARY,
+    COLOR_PRIMARY_HOVER,
+    Button,
+    CycleButton,
+    JobPanel,
+    TabBar,
+)
 from rl_chess.gui.workers import BackgroundWorker
 from rl_chess.ledger import Ledger
 from rl_chess.game import result_string
@@ -97,6 +106,16 @@ class ChessApp:
         self.agent_reload_queue: queue.Queue = queue.Queue()
         self._agent_reload_thread: Optional[threading.Thread] = None
         self._agent_name_before_job: str = self.agent_name
+        self._last_mouse_pos: Optional[Tuple[int, int]] = None
+        self.play_move_scroll: int = 0
+        self.play_move_auto_scroll: bool = True
+        self.play_new_game_btn = Button(
+            r.game_end_button_rect(),
+            "New Game",
+            on_click=self.new_game,
+            color=COLOR_PRIMARY,
+            hover_color=COLOR_PRIMARY_HOVER,
+        )
 
         # Training and benchmark tabs
         self.latest_bench_elo: Optional[Dict[str, Any]] = None
@@ -120,6 +139,13 @@ class ChessApp:
         self.stats_summary: Dict[str, Any] = {}
         self.stats_elo_history: List[Dict[str, Any]] = []
         self.stats_checkpoints: List[Any] = []
+        self.stats_clear_human_btn = Button(
+            r.rect(730, 54, 140, 32),
+            "Clear Human",
+            on_click=self._clear_human_stats,
+            color=(120, 55, 55),
+            hover_color=(150, 70, 70),
+        )
         self.stats_refresh_btn = Button(r.rect(880, 54, 120, 32), "Refresh Stats", on_click=self._refresh_stats)
         self._refresh_stats()
 
@@ -308,6 +334,14 @@ class ChessApp:
 
     def _on_training_finished(self, status: str) -> None:
         self._refresh_stats()
+        if status == "stopped":
+            self.train_panel.log.append("Training stopped.")
+            self.train_panel.progress.set_progress(
+                self.train_panel.progress.progress,
+                label="Training stopped",
+            )
+            return
+
         self.train_panel.log.append("Syncing Play tab with ledger champion...")
         self.train_panel.progress.set_progress(
             self.train_panel.progress.progress,
@@ -336,6 +370,14 @@ class ChessApp:
                 self.latest_bench_elo = self.stats_summary["latest_elo"]
         except Exception as e:
             print(f"Error refreshing stats: {e}")
+
+    def _clear_human_stats(self) -> None:
+        try:
+            removed = self.ledger.clear_human_games()
+            print(f"Cleared {removed} human match(es) from the ledger.")
+            self._refresh_stats()
+        except Exception as e:
+            print(f"Error clearing human stats: {e}")
 
     # -- play tab --------------------------------------------------------
 
@@ -420,6 +462,8 @@ class ChessApp:
         self.latest_analysis = None
         self.is_agent_thinking = False
         self.game_logged = False
+        self.play_move_scroll = 0
+        self.play_move_auto_scroll = True
         self.mcts.reset()
 
     def _trigger_agent_search(self) -> None:
@@ -436,6 +480,10 @@ class ChessApp:
     def _apply_move(self, move: chess.Move) -> None:
         self.mcts.advance_root(move)
         self.session.push(move)
+        if self.play_move_auto_scroll:
+            total_rows = (len(self.session.get_move_sans()) + 1) // 2
+            visible_rows = self.renderer.play_moves_visible_rows()
+            self.play_move_scroll = max(0, total_rows - visible_rows)
         if self.session.board.is_game_over():
             self._on_game_over()
 
@@ -516,9 +564,43 @@ class ChessApp:
 
     def _handle_play_event(self, event: pygame.event.Event) -> None:
         s = self.session
+        if event.type == pygame.MOUSEWHEEL:
+            moves_rect = self.renderer.play_moves_card_rect()
+            mouse_pos = getattr(event, "pos", pygame.mouse.get_pos())
+            if moves_rect.collidepoint(mouse_pos):
+                total_rows = (len(s.get_move_sans()) + 1) // 2
+                visible_rows = self.renderer.play_moves_visible_rows()
+                max_scroll = max(0, total_rows - visible_rows)
+                self.play_move_scroll = max(0, min(max_scroll, self.play_move_scroll - event.y))
+                self.play_move_auto_scroll = (self.play_move_scroll >= max_scroll)
+                return
+
+        if s.board.is_game_over():
+            self.play_new_game_btn.handle_event(event)
+            return
+
+        if s.pending_promotion is not None:
+            if event.type == pygame.MOUSEMOTION:
+                self._last_mouse_pos = event.pos
+                return
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                piece_type = self.renderer.promotion_choice_at(event.pos, s.pending_promotion[1], s.flipped)
+                if piece_type is not None:
+                    move = s.choose_promotion(piece_type)
+                    if move is not None:
+                        self._apply_move(move)
+                else:
+                    s.cancel_promotion()
+                return
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                s.cancel_promotion()
+                return
+            return
+
         if event.type not in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
             return
         if event.type == pygame.MOUSEMOTION:
+            self._last_mouse_pos = event.pos
             s.mouse_motion(event.pos)
             return
         if event.button != 1:
@@ -548,10 +630,26 @@ class ChessApp:
                 drag_piece=s.drag_piece if dragging else None,
                 drag_pos=s.drag_pos if dragging else None,
             )
+            if s.pending_promotion is not None:
+                r.draw_promotion_picker(
+                    screen,
+                    to_sq=s.pending_promotion[1],
+                    color=s.human_color,
+                    flipped=s.flipped,
+                    hover_pos=self._last_mouse_pos,
+                )
+            notice = game_end_notice(s.board, s.human_color) if s.board.is_game_over() else None
+            if notice is not None:
+                r.draw_game_end_overlay(
+                    screen, s.board, notice, flipped=s.flipped, new_game_btn=self.play_new_game_btn
+                )
             r.draw_analysis_panel(
                 screen, s.board, self.latest_analysis, self.agent_name, self.is_agent_thinking,
                 weights_status=self.agent_weights_message,
                 weights_loading=self.agent_weights_loading,
+                notice=notice,
+                move_sans=s.get_move_sans(),
+                move_scroll=self.play_move_scroll,
             )
         elif self.current_tab == "train":
             champion = self.stats_summary.get("champion")
@@ -586,6 +684,7 @@ class ChessApp:
             self.bench_panel.render(screen, r.font_md, r.font_sm)
         elif self.current_tab == "stats":
             r.draw_stats_tab(screen, self.stats_summary, self.stats_elo_history, self.stats_checkpoints)
+            self.stats_clear_human_btn.render(screen, r.font_sm)
             self.stats_refresh_btn.render(screen, r.font_sm)
 
     def run(self) -> None:
@@ -595,7 +694,7 @@ class ChessApp:
 
             s = self.session
             if self.current_tab == "play" and not s.board.is_game_over() and not self.is_agent_thinking \
-                    and s.board.turn != s.human_color:
+                    and s.pending_promotion is None and s.board.turn != s.human_color:
                 self._trigger_agent_search()
 
             for event in pygame.event.get():
@@ -606,6 +705,9 @@ class ChessApp:
                     continue
                 if self.current_tab == "play":
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        if s.pending_promotion is not None:
+                            s.cancel_promotion()
+                            continue
                         running = False
                     self._handle_play_event(event)
                 elif self.current_tab == "train":
@@ -626,6 +728,7 @@ class ChessApp:
                 elif self.current_tab == "benchmark":
                     self.bench_panel.handle_event(event)
                 elif self.current_tab == "stats":
+                    self.stats_clear_human_btn.handle_event(event)
                     self.stats_refresh_btn.handle_event(event)
 
             self._draw()

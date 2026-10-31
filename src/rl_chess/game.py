@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Callable, List, Optional, Tuple
 
 import chess
@@ -81,6 +82,7 @@ def play_game(
     pick_move: PickMove,
     max_plies: int,
     on_move: Optional[OnMove] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> Tuple[chess.Board, int]:
     """Play from the start position until the game ends, a bad move is returned, or max_plies.
 
@@ -91,7 +93,11 @@ def play_game(
     history: List[chess.Board] = []
     ply = 0
     while not board.is_game_over() and ply < max_plies:
+        if stop_event and stop_event.is_set():
+            break
         move = pick_move(board, history)
+        if stop_event and stop_event.is_set():
+            break
         if move is None or move not in board.legal_moves:
             break
         history.append(board.copy())

@@ -3,10 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from rl_chess.config import DEFAULT_CONFIG_PATH
 from rl_chess.ledger import Ledger
+
+
+def _require_gui_runtime() -> None:
+    """Pygame fonts are unreliable on Python 3.14+ in some installs; use the project .venv (3.11)."""
+    if sys.version_info >= (3, 14):
+        raise SystemExit(
+            f"rl-chess GUI needs Python 3.10–3.13 (you have {sys.version.split()[0]}).\n"
+            "From the RL-Chess-Agent folder run:\n"
+            "  source .venv/bin/activate && rl-chess\n"
+            "Or:  .venv/bin/rl-chess"
+        )
+    import pygame
+
+    pygame.init()
+    try:
+        pygame.font.init()
+    except (NotImplementedError, ImportError) as e:
+        raise SystemExit(
+            "Pygame font support is not available in this Python environment.\n"
+            f"({e})\n"
+            "Use the project virtualenv instead:\n"
+            "  cd RL-Chess-Agent && source .venv/bin/activate && pip install -e . && rl-chess"
+        ) from e
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -107,6 +131,7 @@ def main() -> None:
         from rl_chess.benchmark import run_benchmark
         run_benchmark(args.config, args.checkpoint, args.games)
     else:
+        _require_gui_runtime()
         from rl_chess.gui.app import run_app
         run_app(args.config, args.checkpoint, args.color)
 

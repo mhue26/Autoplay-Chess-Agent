@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 import queue
 import threading
-import time
 import traceback
 from typing import Any, Callable, Dict, Optional
 
@@ -31,7 +30,7 @@ class TrainingWorker:
     def request_stop(self) -> None:
         if self.is_running():
             self._stop_event.set()
-            self.event_queue.put({"type": "log", "text": "Stop requested... waiting for current step/game to finish."})
+            self.event_queue.put({"type": "log", "text": "Stopping training immediately..."})
 
     def start(
         self,
@@ -58,7 +57,7 @@ class TrainingWorker:
                 def on_event(event: Dict[str, Any]):
                     self.event_queue.put({"type": "train_viz", "data": event})
                     if self.pace_delay_sec > 0 and event.get("type") == "move":
-                        time.sleep(self.pace_delay_sec)
+                        self._stop_event.wait(self.pace_delay_sec)
 
                 run_training(
                     config_path=config_path,
@@ -170,7 +169,7 @@ class BackgroundWorker:
     def request_stop(self) -> None:
         if self.is_running():
             self._stop_event.set()
-            self._emit("log", "Stop requested... waiting for current step/game to finish.")
+            self._emit("log", "Stopping training immediately...")
 
     def start(self, **kwargs: Any) -> bool:
         if self.is_running():
@@ -181,7 +180,7 @@ class BackgroundWorker:
         def on_event(data: Any) -> None:
             self._emit("train_viz", data)
             if self.pace_delay_sec > 0 and isinstance(data, dict) and data.get("type") == "move":
-                time.sleep(self.pace_delay_sec)
+                self._stop_event.wait(self.pace_delay_sec)
 
         callbacks = {
             "on_log": lambda msg: self._emit("log", msg),

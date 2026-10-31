@@ -198,7 +198,10 @@ def run_training(
                 black_name=champ_name,
                 on_move=handle_move,
                 on_game_end=handle_game_end,
+                stop_event=stop_event,
             )
+            if stop_event and stop_event.is_set():
+                break
             replay_buffer.push_game(samples)
             ledger.record_game(
                 "selfplay", champ_name, champ_name, result, plies,
@@ -305,7 +308,12 @@ def run_training(
             on_game_complete=handle_arena_game_complete,
             cand_name=f"gen_{g}",
             champ_name=f"gen_{current_gen}",
+            stop_event=stop_event,
         )
+
+        if stop_event and stop_event.is_set():
+            log("Training stopped during arena.")
+            break
 
         emit(
             "gen_end",

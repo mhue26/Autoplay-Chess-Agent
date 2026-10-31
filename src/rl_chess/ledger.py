@@ -131,6 +131,22 @@ class Ledger:
             conn.execute("DELETE FROM games")
             conn.execute("DELETE FROM checkpoints")
 
+    def clear_human_games(self) -> int:
+        """Delete Play-tab human match rows and their PGN files. Returns number of rows removed."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT pgn_path FROM games WHERE kind = 'human'"
+            ).fetchall()
+            conn.execute("DELETE FROM games WHERE kind = 'human'")
+        for row in rows:
+            path = row["pgn_path"]
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return len(rows)
+
     def get_champion_checkpoint(self) -> Optional[CheckpointRecord]:
         """Latest promoted checkpoint, falling back to the latest registered one."""
         with self._connect() as conn:
